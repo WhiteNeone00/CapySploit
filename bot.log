@@ -1,0 +1,17 @@
+nohup: ignoring input
+
+> capi@1.0.0 bot
+> node src/discord-bot.js
+
+Discord bot config loaded: {
+  hasToken: true,
+  hasClientId: true,
+  hasGuildId: true,
+  apiBaseUrl: 'https://capi.insideproxy.me'
+}
+Starting Discord bot...
+Discord bot logged in as CapySploit#4060
+(node:2875573) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Registered guild slash commands.
+(node:2875573) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.

@@ -1,0 +1,1 @@
+This folder contains the built output assets for the worker "capi" generated at 2026-08-09T22:44:43.505Z.
