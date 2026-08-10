@@ -58,6 +58,12 @@ This means you do not need a persistent gateway bot on a VPS to handle Discord s
 
 If you still want gateway behavior or live presence, use `CAPI/src/discord-bot.js` separately.
 
+## Examples
+
+- https://capi.capysploit.workers.dev/lookup/lookup_mc?server_address=hypixel.net
+- https://capi.capysploit.workers.dev/api/network_statistics
+- https://capi.capysploit.workers.dev/api/attack?username=root&password=admin123&host=44.44.44.44&port=80&time=60&method=udp
+
 ## Routes
 
 - GET /api/network_statistics
@@ -110,3 +116,4 @@ wrangler kv:namespace create CAPI_KV
 
 After creating D1/R2/KV, run `npm run dev` to test locally with `wrangler dev`.
 >>>>>>> f3a8ea9 (Initial commit)
+this is educational purpose only
