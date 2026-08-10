@@ -368,6 +368,30 @@ export async function apiHandler(parts, request, env) {
     }, 200, { service: env.API_NAME || 'CAPI' });
   }
 
+  if (endpoint === 'methods') {
+    // Public method catalog (no admin credentials required)
+    const dbMethods = await Vault.listMethods(env);
+    const payloadMethods = getPayloadMethods();
+    const methodMap = new Map((payloadMethods || []).map((item) => [String(item?.name || '').toLowerCase(), item]));
+
+    const methods = (dbMethods || []).map((method) => {
+      const meta = methodMap.get(String(method?.name || '').toLowerCase()) || null;
+      return {
+        id: method?.id || null,
+        name: method?.name || null,
+        description: method?.description || meta?.description || `${method?.name || 'method'} method`,
+        target_type: meta?.target_type || null,
+        default_port: meta?.default_port || null,
+        min_time: meta?.min_time || null,
+        max_time: meta?.max_time || null,
+        max_concurrents: meta?.max_concurrents || null,
+        max_slots: meta?.max_slots || null
+      };
+    });
+
+    return structuredResponse({ error: false, message: 'public methods loaded', data: { methods } });
+  }
+
   if (endpoint === 'discord_profile') {
     const discordUserId = q.discord_user_id || q.discord_id || q.user_id;
     if (!discordUserId) return makePolishedError('missing discord_user_id', 400, { hint: 'Provide discord_user_id to lookup your linked profile.' });
@@ -408,9 +432,7 @@ export async function apiHandler(parts, request, env) {
           api_access: Boolean(user.api_access),
           mfa_enabled: Boolean(user.mfa_enabled || false),
           account_status: user.suspended ? 'suspended' : warningSummary.count >= 5 ? 'at_limit' : 'active',
-          warning_status: warningSummary.warn_status,
-          warning_summary: warningSummary.label,
-          warnings: warningSummary,
+          warnings: Number(warningSummary.count || 0),
           discord_link: discordLinkStatus
         }
       },
@@ -533,9 +555,7 @@ export async function apiHandler(parts, request, env) {
           service_name: serviceName,
           resellers_service: Boolean(u.created_by && u.created_by !== u.username),
           account_status: u.suspended ? 'suspended' : warningSummary.count >= 5 ? 'at_limit' : 'active',
-          warning_status: warningSummary.warn_status,
-          warning_summary: warningSummary.label,
-          warnings: warningSummary,
+          warnings: Number(warningSummary.count || 0),
           discord_link: discordLinkStatus
         }
       }
@@ -572,9 +592,7 @@ export async function apiHandler(parts, request, env) {
           resellers_service: Boolean(u.created_by && u.created_by !== u.username),
           expiry_unix: Number(u.expiry_unix || 0),
           account_status: u.suspended ? 'suspended' : warningSummary.count >= 5 ? 'at_limit' : 'active',
-          warning_status: warningSummary.warn_status,
-          warning_summary: warningSummary.label,
-          warnings: warningSummary,
+          warnings: Number(warningSummary.count || 0),
           discord_link: discordLinkStatus
         }
       }
@@ -587,6 +605,20 @@ export async function apiHandler(parts, request, env) {
 
   if (endpoint === 'attack') {
     const qv = parseQuery(request);
+    const authHeader = (request.headers && request.headers.get ? request.headers.get('Authorization') : null) || '';
+    const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    let botAuth = false;
+    // If caller presents the BOT_API_KEY and provides a discord_user_id, allow acting on behalf of the linked user without password
+    if (bearer && env.BOT_API_KEY && bearer === String(env.BOT_API_KEY)) {
+      const discordId = qv.discord_user_id || qv.discord_id || qv.discord;
+      if (discordId) {
+        const link = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordId);
+        if (link && link.username) {
+          qv.username = link.username;
+          botAuth = true;
+        }
+      }
+    }
     const record = {
       username: qv.username || null,
       target: qv.host || qv.ip || null,
@@ -602,6 +634,14 @@ export async function apiHandler(parts, request, env) {
 
     const user = record.username ? await Vault.getUser(env, record.username) : null;
     if (!user || user.username !== record.username) return makePolishedError('user does not exist', 404, { hint: 'Verify the username supplied in the request.' });
+
+    // If not bot-authenticated, require password parameter and validate credentials
+    if (!botAuth) {
+      const providedPassword = (qv.password || qv.pass || '').toString();
+      if (!providedPassword) return makePolishedError('missing credentials', 401, { hint: 'Provide username and password in the request.' });
+      // Note: Vault stores the password in the `password` field. Adjust if passwords are hashed.
+      if (String(user.password || '') !== providedPassword) return makePolishedError('invalid credentials', 401, { hint: 'Username or password is incorrect.' });
+    }
 
     const userWarnings = await Vault.getUserWarnings(env, user.username);
     if (user.suspended || userWarnings.suspended || userWarnings.count >= userWarnings.limit) {

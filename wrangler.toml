@@ -6,10 +6,12 @@ account_id = "1f6a47bf7e2f4a9b77a90d9fa47294e1"
 [vars]
 API_NAME = "CAPI"
 API_VERSION = "1.0.0"
+DISCORD_TOKEN = "MTUzNjE0NDM3OTYyNDgyNDg4Mw.GLKoia.rRnNmQ7NwJql1j-LTGeEam7ADCtlzXAkHvhJfk"
 DISCORD_CLIENT_ID = "1536144379624824883"
 DISCORD_CLIENT_SECRET = "ImlpDflrplE5EnfWmbP3_hRmB-1QfrmA"
 DISCORD_PUBLIC_KEY = "8141543f9e937c61ae0cf84462417522fff69850f88543ada68833cba15c4816"
 DISCORD_GUILD_ID = "1371583696465039471"
+BOT_API_KEY = "your-secret-key"
 
 # D1 database binding (create the database with `wrangler d1 create capi_db`)
 [[d1_databases]]

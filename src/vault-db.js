@@ -397,24 +397,37 @@ export async function unlinkDiscordLinkByDiscordId(env, discordUserId, unlinkedB
 
 export async function getUserWarnings(env, username) {
   const DB = getDB(env);
-  if (!DB) return { count: 0, limit: 5, suspended: false };
+  if (!DB) return { count: 0, limit: 5, suspended: false, last_warning: null };
   const res = await DB.prepare('SELECT * FROM user_warnings WHERE username = ?').bind(username).all();
   const row = res && res.results && res.results[0] ? res.results[0] : null;
-  return { count: Number(row?.count || 0), limit: 5, suspended: false, last_warning: row?.last_warning || null };
+  const count = Number(row?.count || 0);
+  const lastWarning = row?.last_warning ? new Date(row.last_warning) : null;
+  const now = new Date();
+  const expired = lastWarning && !Number.isNaN(lastWarning.getTime()) && (now.getTime() - lastWarning.getTime()) > 7 * 24 * 60 * 60 * 1000;
+
+  if (row && expired) {
+    await DB.prepare('UPDATE user_warnings SET count = 0, last_warning = NULL WHERE username = ?').bind(username).run();
+    return { count: 0, limit: 5, suspended: false, last_warning: null };
+  }
+
+  return { count, limit: 5, suspended: false, last_warning: row?.last_warning || null };
 }
 
 export async function incrementUserWarning(env, username, target) {
   const DB = getDB(env);
   if (!DB) return { count: 0, limit: 5, suspended: false };
+  const existingWarnings = await getUserWarnings(env, username);
+  const nextCount = Number(existingWarnings.count || 0) + 1;
+  const ts = new Date().toISOString();
   const existing = await DB.prepare('SELECT * FROM user_warnings WHERE username = ?').bind(username).all();
   const row = existing && existing.results && existing.results[0] ? existing.results[0] : null;
-  const nextCount = Number((row && row.count) || 0) + 1;
-  const ts = new Date().toISOString();
+
   if (row) {
     await DB.prepare('UPDATE user_warnings SET target = ?, count = ?, last_warning = ? WHERE username = ?').bind(target || row.target, nextCount, ts, username).run();
   } else {
     await DB.prepare('INSERT INTO user_warnings (username, target, count, last_warning) VALUES (?, ?, ?, ?)').bind(username, target || null, nextCount, ts).run();
   }
+
   const limit = 5;
   const suspended = nextCount >= limit;
   if (suspended) {

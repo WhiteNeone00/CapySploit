@@ -1,4 +1,4 @@
-import { formatErrorDetails, jsonResponse } from './engine-core.js';
+import { formatErrorDetails, jsonResponse } from './engine.js';
 import { handleRequest } from './orchestrator.js';
 
 export default {
