@@ -5,16 +5,9 @@ import { apiHandler } from './api.js';
 import { adminHandler } from './admin.js';
 import { lookupHandler } from './lookup.js';
 
-async function seedRootUser(env) {
-  const DBref = Vault.getDB(env);
-  const rootUser = env.ROOT_USER || env.CAPI_ROOT_USER || 'root';
-  const rootPass = env.ROOT_PASS || env.CAPI_ROOT_PASS || 'admin123';
-  if (!DBref) return;
-  const users = await Vault.listUsers(env);
-  if (!users || users.length === 0) {
-    await Vault.saveUser(env, { username: rootUser, password: rootPass, admin: 1, reseller: 0, vip: 1, holder: 1, api_access: 1, max_time: 500, cooldown: 10, concurrents: 3, max_daily_attacks: 1000, created_by: rootUser, expiry_unix: 0 });
-  }
-}
+let dbInitialized = false;
+let lastCleanupTime = 0;
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // Run cleanup every 5 minutes
 
 export async function handleRequest(request, env) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' } });
@@ -42,8 +35,30 @@ export async function handleRequest(request, env) {
 
   const parts = path.split('/');
 
-  await Vault.ensureTables(env);
-  await seedRootUser(env);
+  // Initialize database and seed defaults on first request
+  if (!dbInitialized) {
+    await Vault.initializeDatabase(env);
+    dbInitialized = true;
+  }
+
+  // Periodically cleanup old logs to prevent unbounded database growth
+  const now = Date.now();
+  if (now - lastCleanupTime > CLEANUP_INTERVAL_MS) {
+    lastCleanupTime = now;
+    // Run cleanup in background (don't await to not block response)
+    Vault.cleanupOldLogs(env, 30).catch(e => console.error('Background cleanup failed:', e.message));
+  }
+
+  // Check maintenance mode - STRICTLY only allow /admin/ when enabled (no exceptions)
+  const maintenanceEnabled = await Vault.getMaintenanceMode(env);
+  if (maintenanceEnabled && parts[0] !== 'admin') {
+    return jsonResponse({
+      error: true,
+      message: 'API is in maintenance mode. Only /admin/ endpoints are available.',
+      status: 503,
+      service: env.API_NAME || 'CAPI'
+    }, 503);
+  }
 
   if (parts[0] === 'api') return apiHandler(parts.slice(1), request, env);
   if (parts[0] === 'admin') return adminHandler(parts.slice(1), request, env);

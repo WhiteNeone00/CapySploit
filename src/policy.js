@@ -39,6 +39,6 @@ export function getUserLimits(user) {
   return {
     minTime: Number(user?.min_time || 30),
     maxTime: Number(user?.max_time || 60),
-    maxConcurrents: Number(user?.max_concurrents || user?.concurrents || 1)
+    maxConcurrents: Number(user?.concurrents || 1)
   };
 }

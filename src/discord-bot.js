@@ -1,7 +1,9 @@
 import 'dotenv/config';
+import { exec } from 'node:child_process';
 import { Client, GatewayIntentBits, ActivityType, Partials, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ContainerBuilder, MessageFlags, SectionBuilder, SeparatorBuilder, TextDisplayBuilder, ThumbnailBuilder, PermissionsBitField } from 'discord.js';
 import * as Vault from './vault-db.js';
 import { buildDiscordRoleNames, userPlanRole } from './discord.js';
+import { formatSlotBar } from './helpers.js';
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -9,7 +11,89 @@ const guildId = process.env.DISCORD_GUILD_ID;
 const apiBaseUrl = process.env.API_BASE_URL || 'https://capi.insideproxy.me';
 const apiSecondary = process.env.API_BASE_URL_SECONDARY || 'https://capi.capysploit.workers.dev';
 const ATTACK_CARD_IMAGE_URL = process.env.ATTACK_CARD_IMAGE_URL || 'https://discord-webhook.com/uploads/5ab0b46dde847b81e431d78bf9c9757d.webp';
+const BOTTOM_BANNER_IMAGE_URL = process.env.BOTTOM_BANNER_IMAGE_URL || ATTACK_CARD_IMAGE_URL;
 const API_CANDIDATES = [apiBaseUrl, apiSecondary].filter(Boolean);
+
+function appendCommandBanner(container) {
+  if (!BOTTOM_BANNER_IMAGE_URL) return container;
+  return container.addMediaGalleryComponents({
+    type: 12,
+    items: [{ media: { type: 3, url: BOTTOM_BANNER_IMAGE_URL } }]
+  });
+}
+
+function isDiscordAdmin(interaction) {
+  const member = interaction.member;
+  return Boolean(member && (
+    member.roles?.cache?.some((role) => role.name?.toLowerCase() === 'admin') ||
+    Boolean(member.permissions?.has?.(PermissionsBitField.Flags.Administrator))
+  ));
+}
+
+function isDiscordOwner(interaction) {
+  return interaction.user.id === process.env.DISCORD_OWNER_ID || interaction.user.id === interaction.guild?.ownerId;
+}
+
+function buildInfoContainer(title, summary, lines = [], buttons = []) {
+  const container = new ContainerBuilder()
+    .setAccentColor(0x3498DB)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(title))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(summary))
+    .addSeparatorComponents(new SeparatorBuilder());
+
+  for (const line of lines) {
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(line));
+  }
+
+  if (buttons.length) {
+    container.addActionRowComponents(new ActionRowBuilder().addComponents(...buttons));
+  }
+
+  appendCommandBanner(container);
+  return container;
+}
+
+function buildStatsContainer(body) {
+  const summary = `**Users:** ${body.total_users_count || 0} • **Active:** ${body.active_users_count || 0} • **Suspended:** ${body.suspended_users_count || 0}`;
+  const lines = [
+    `**Ongoing attacks:** ${body.total_ongoing_attacks || 0} • **Today:** ${body.total_attacks_today || 0}`,
+    `**VIP:** ${body.vip_users_count || 0} • **Holder:** ${body.holder_users_count || 0} • **Reseller:** ${body.reseller_users_count || 0}`,
+    `**Verified:** ${body.verified_discord_users_count || 0} • **Pending links:** ${body.pending_discord_links_count || 0}`,
+    `**Health:** ${body.health_status || 'unknown'} • **Slots:** ${body.max_attack_api_slots || 'N/A'}`
+  ];
+  return buildInfoContainer('## 📈 Network Statistics', summary, lines, [new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('View API').setURL(apiBaseUrl)]);
+}
+
+function buildOngoingContainer(body) {
+  const summary = `**Ongoing attacks:** ${body.total_ongoing_attacks || 0} • **Today:** ${body.total_attacks_today || 0}`;
+  const lines = [
+    `**Active users:** ${body.active_users_count || 0} • **VIP users:** ${body.vip_users_count || 0}`,
+    `**Suspended:** ${body.suspended_users_count || 0} • **Verified:** ${body.verified_discord_users_count || 0}`,
+    `**Pending links:** ${body.pending_discord_links_count || 0} • **Health:** ${body.health_status || 'unknown'}`
+  ];
+  return buildInfoContainer('## 🔥 Ongoing Attacks', summary, lines, [new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('View API Stats').setURL(`${apiBaseUrl}/api/network_statistics`)]);
+}
+
+function buildRecentContainer(username, list = []) {
+  const summary = `Showing ${Math.min(list.length, 8)} of ${list.length} recent attacks for **${username}**`;
+  const lines = list.slice(0, 8).map((item, index) => {
+    const target = item.target || item.Target || item.host || 'unknown';
+    const method = (item.method || item.Method_Used || 'N/A').toUpperCase();
+    const duration = item.duration || item.Time_Used || item.time || 'N/A';
+    return `**${index + 1}.** ${target} • ${method} • ${duration}s`;
+  });
+  if (!lines.length) lines.push('No recent attacks found.');
+  const container = buildInfoContainer(`## 🕒 Recent Attacks for ${username}`, summary, lines, [new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('View Profile').setURL(`${apiBaseUrl}/api/view_profile?username=${encodeURIComponent(username)}`)]);
+  return container;
+}
+
+function buildAdminActionContainer(title, message, details = []) {
+  const lines = [`**Result:** ${message}`];
+  for (const detail of details) {
+    lines.push(detail);
+  }
+  return buildInfoContainer(title, `Admin action completed.`, lines);
+}
 
 async function apiFetch(pathWithQuery, options) {
   // pathWithQuery may be a full path like '/api/xyz?foo=bar' or a full URL
@@ -18,7 +102,13 @@ async function apiFetch(pathWithQuery, options) {
     try {
       const baseClean = base.replace(/\/$/, '');
       const url = pathWithQuery.startsWith('http') ? pathWithQuery : `${baseClean}${pathWithQuery}`;
-      const res = await fetch(url, options);
+      // Inject bot API key into headers if available and not explicitly provided
+      const opt = Object.assign({}, options || {});
+      opt.headers = Object.assign({}, opt.headers || {});
+      if (!opt.headers.Authorization && process.env.BOT_API_KEY) {
+        opt.headers.Authorization = `Bearer ${process.env.BOT_API_KEY}`;
+      }
+      const res = await fetch(url, opt);
       // If server responded with a client error, return it (it's a valid response)
       if (res.ok || (res.status >= 400 && res.status < 500)) return res;
       // For 5xx or network errors, try next candidate
@@ -145,12 +235,6 @@ async function updateStatus() {
   }
 }
 
-function formatSlotBar(used, total) {
-  const filled = total > 0 ? Math.round(Math.min(total, used) * 10 / total) : 0;
-  const empty = 10 - filled;
-  return `${'🔵'.repeat(filled)}${'⬜'.repeat(empty)} (${total === 0 ? '0.00' : ((used / total) * 100).toFixed(2)}%)`;
-}
-
 async function fetchGraphStats() {
   try {
     const response = await apiFetch('/api/graph');
@@ -179,8 +263,8 @@ async function fetchGraphStats() {
 function buildGraphContainer(stats) {
   const statusLabel = stats.maintenance ? 'Maintenance' : 'Live';
   const updatedAt = new Date(stats.updatedAt || Date.now()).getTime();
-  return new ContainerBuilder()
-    .setAccentColor(stats.maintenance ? 0xF39C12 : 0x2ECC71)
+  const container = new ContainerBuilder()
+    .setAccentColor(0x3498DB)
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent('## 📊 Graph - Real-time Statistics')
     )
@@ -209,14 +293,16 @@ function buildGraphContainer(stats) {
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(`**Updated:** <t:${Math.floor(updatedAt / 1000)}:R>`)
     )
-    .addActionRowComponents(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setStyle(ButtonStyle.Secondary)
-          .setLabel('Refresh')
-          .setCustomId('graph_refresh')
-      )
-    );
+  appendCommandBanner(container);
+  container.addActionRowComponents(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Secondary)
+        .setLabel('Refresh')
+        .setCustomId('graph_refresh')
+    )
+  );
+  return container;
 }
 
 function buildAttackContainer(state, now = Date.now()) {
@@ -249,15 +335,13 @@ function buildAttackContainer(state, now = Date.now()) {
 
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`*Progress:* ${progressBar} *${pctLabel}%*`));
 
-  let targetInfo =
+  const targetInfo =
     `**TARGET:** **\`[${targetLabel}]\`**\n` +
     `**TIME:** **\`[${total}s]\`**\n` +
     `**PORT:** **\`[${state.port || 'N/A'}]\`**\n` +
     `**METHOD:** **\`[${methodLabel}]\`**\n` +
-    `**ORG:** **\`[${targetOrg}]\`**`;
-  if (state.targetIsp) {
-    targetInfo += `\n**ISP:** **\`[${state.targetIsp}]\`**`;
-  }
+    `**ORG:** **\`[${targetOrg}]\`**` +
+    (state.targetIsp ? `\n**ISP:** **\`[${state.targetIsp}]\`**` : '');
   container.addTextDisplayComponents(new TextDisplayBuilder().setContent(targetInfo));
 
   container.addSeparatorComponents(new SeparatorBuilder());
@@ -277,17 +361,7 @@ function buildAttackContainer(state, now = Date.now()) {
     )
   );
 
-  container.addMediaGalleryComponents({
-    type: 12,
-    items: [
-      {
-        media: {
-          type: 3,
-          url: thumbnailUrl
-        }
-      }
-    ]
-  });
+  appendCommandBanner(container);
 
   const actions = new ActionRowBuilder();
   const stopButton = new ButtonBuilder()
@@ -335,7 +409,7 @@ function startAttackUpdater() {
 function buildLookupContainer(type, hostname, payload, path) {
   const server = payload.server || {};
   const ipinfo = payload.ip_info || payload.ipinfo || payload.ip_info_v4 || {};
-  const accent = type === 'mc' ? 0x2ECC71 : type === 'cfx' ? 0x9B59B6 : type === 'domain' ? 0xF39C12 : 0x3498DB;
+  const accent = 0x3498DB;
   const title = type === 'mc' ? 'Minecraft Lookup' : type === 'cfx' ? 'FiveM Lookup' : type === 'domain' ? 'Domain Lookup' : 'IP Lookup';
 
   const countryCode = (ipinfo.countryCode || ipinfo.country_code || ipinfo.country || '').toUpperCase();
@@ -347,7 +421,7 @@ function buildLookupContainer(type, hostname, payload, path) {
   const fetchedAt = new Date().toISOString();
 
   const container = new ContainerBuilder()
-    .setAccentColor(accent)
+    .setAccentColor(0x3498DB)
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🔎 ${title} • ${hostname}`))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**Status:** ${payload.online ? 'Online ✅' : payload.online === false ? 'Offline ⛔' : 'Unknown'}${payload.ping ? ` • ${payload.ping}ms` : ''}${payload.version ? ` • v${payload.version}` : ''}`))
     .addSeparatorComponents(new SeparatorBuilder())
@@ -487,7 +561,9 @@ function buildLookupContainer(type, hostname, payload, path) {
   );
 
   if (glance) container.addTextDisplayComponents(new TextDisplayBuilder().setContent(`**At a glance:** ${glance}`));
-  container.addSeparatorComponents(new SeparatorBuilder()).addActionRowComponents(linksRow).addActionRowComponents(refreshRow);
+  container.addSeparatorComponents(new SeparatorBuilder());
+  appendCommandBanner(container);
+  container.addActionRowComponents(linksRow).addActionRowComponents(refreshRow);
   return { container, attachment };
 }
 
@@ -510,6 +586,67 @@ const graphCommand = new SlashCommandBuilder()
   .setName('graph')
   .setDescription('Show live API and C2 slot statistics')
   .setDMPermission(true);
+
+const statsCommand = new SlashCommandBuilder()
+  .setName('stats')
+  .setDescription('Show network statistics summary');
+
+const ongoingCommand = new SlashCommandBuilder()
+  .setName('ongoing')
+  .setDescription('Show global ongoing attacks summary');
+
+const recentCommand = new SlashCommandBuilder()
+  .setName('recent')
+  .setDescription('Show your recent attacks (private)')
+  .setDMPermission(true);
+
+const adminCommand = new SlashCommandBuilder()
+  .setName('admin')
+  .setDescription('Admin user management commands')
+  .addSubcommandGroup(group => group
+    .setName('user')
+    .setDescription('Manage users')
+    .addSubcommand(sub => sub
+      .setName('create')
+      .setDescription('Create a new user')
+      .addStringOption(option => option.setName('username').setDescription('Username').setRequired(true))
+      .addStringOption(option => option.setName('password').setDescription('Password').setRequired(true))
+      .addStringOption(option => option.setName('preset_option').setDescription('Preset option').setRequired(true)))
+    .addSubcommand(sub => sub
+      .setName('delete')
+      .setDescription('Delete an existing user')
+      .addStringOption(option => option.setName('username_option').setDescription('Username').setRequired(true)))
+    .addSubcommand(sub => sub
+      .setName('edit')
+      .setDescription('Edit a user field')
+      .addStringOption(option => option.setName('username_option').setDescription('Username').setRequired(true))
+      .addStringOption(option => option.setName('field_option').setDescription('Field name').setRequired(true))
+      .addStringOption(option => option.setName('newvalue_option').setDescription('New value for the field').setRequired(true)))
+    .addSubcommand(sub => sub
+      .setName('view')
+      .setDescription('View details for a user')
+      .addStringOption(option => option.setName('username_option').setDescription('Username').setRequired(true)))
+    .addSubcommand(sub => sub
+      .setName('logs')
+      .setDescription('Show logs for a user')
+      .addStringOption(option => option.setName('username_option').setDescription('Username').setRequired(true))));
+
+const ownerCommand = new SlashCommandBuilder()
+  .setName('owner')
+  .setDescription('Owner-level maintenance commands')
+  .addSubcommandGroup(group => group
+    .setName('logs')
+    .setDescription('Owner log actions')
+    .addSubcommand(sub => sub
+      .setName('delete')
+      .setDescription('Delete owner logs'))
+    .addSubcommand(sub => sub
+      .setName('search')
+      .setDescription('Search owner logs by username')
+      .addStringOption(option => option.setName('username_option').setDescription('Username to search').setRequired(true))))
+  .addSubcommand(sub => sub
+    .setName('reboot')
+    .setDescription('Redeploy Wrangler and restart the bot'));
 
 const attackCommand = new SlashCommandBuilder()
   .setName('attack')
@@ -534,7 +671,19 @@ const lookupCommand = new SlashCommandBuilder()
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(token);
-  const commands = [linkCommand.toJSON(), planCommand.toJSON(), unlinkCommand.toJSON(), lookupCommand.toJSON(), graphCommand.toJSON(), attackCommand.toJSON()];
+  const commands = [
+    linkCommand.toJSON(),
+    planCommand.toJSON(),
+    unlinkCommand.toJSON(),
+    lookupCommand.toJSON(),
+    graphCommand.toJSON(),
+    attackCommand.toJSON(),
+    statsCommand.toJSON(),
+    ongoingCommand.toJSON(),
+    recentCommand.toJSON(),
+    adminCommand.toJSON(),
+    ownerCommand.toJSON()
+  ];
   try {
     if (guildId) {
       // Clear any existing global commands to avoid duplicates (global + guild)
@@ -599,6 +748,7 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+  try {
   if (interaction.isButton()) {
     if (interaction.customId === 'delete_plan_message' || interaction.customId === 'delete_attack_message') {
       try {
@@ -869,23 +1019,24 @@ client.on('interactionCreate', async (interaction) => {
       .addSeparatorComponents(new SeparatorBuilder())
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent('CapySploit • Plan Panel • WIP • Stay Tuned')
-      )
-      .addActionRowComponents(
-        new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setStyle(ButtonStyle.Link)
-            .setLabel('View API')
-            .setURL(`${apiBaseUrl}/api/view_profile?username=${encodeURIComponent(profile.username)}`),
-          new ButtonBuilder()
-            .setStyle(ButtonStyle.Secondary)
-            .setLabel('Refresh')
-            .setCustomId('plan_refresh'),
-          new ButtonBuilder()
-            .setStyle(ButtonStyle.Danger)
-            .setLabel('Delete Message')
-            .setCustomId('delete_plan_message')
-        )
       );
+    appendCommandBanner(container);
+    container.addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setStyle(ButtonStyle.Link)
+          .setLabel('View API')
+          .setURL(`${apiBaseUrl}/api/view_profile?username=${encodeURIComponent(profile.username)}`),
+        new ButtonBuilder()
+          .setStyle(ButtonStyle.Secondary)
+          .setLabel('Refresh')
+          .setCustomId('plan_refresh'),
+        new ButtonBuilder()
+          .setStyle(ButtonStyle.Danger)
+          .setLabel('Delete Message')
+          .setCustomId('delete_plan_message')
+      )
+    );
 
     await interaction.reply({
       components: [container],
@@ -936,6 +1087,182 @@ client.on('interactionCreate', async (interaction) => {
     const stats = await fetchGraphStats();
     const container = buildGraphContainer(stats);
     await interaction.reply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (interaction.commandName === 'stats') {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const res = await apiFetch('/api/network_statistics');
+      const body = await res.json();
+      if (body.error) return await interaction.editReply({ content: `Failed to load stats: ${body.message || 'unknown'}` });
+      const cont = buildStatsContainer(body);
+      await interaction.editReply({ components: [cont], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+    } catch (err) {
+      console.error('Stats command failed:', err);
+      await interaction.editReply({ content: `Failed to load stats: ${err?.message || 'error'}` });
+    }
+    return;
+  }
+
+  if (interaction.commandName === 'ongoing') {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const res = await apiFetch('/api/network_statistics');
+      const body = await res.json();
+      if (body.error) return await interaction.editReply({ content: `Failed to load ongoing: ${body.message || 'unknown'}` });
+      const cont = buildOngoingContainer(body);
+      await interaction.editReply({ components: [cont], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+    } catch (err) {
+      console.error('Ongoing command failed:', err);
+      await interaction.editReply({ content: `Failed to load ongoing attacks: ${err?.message || 'error'}` });
+    }
+    return;
+  }
+
+  if (interaction.commandName === 'recent') {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const discordId = interaction.user.id;
+      const botKey = process.env.BOT_API_KEY;
+      const profileHeaders = botKey ? { Authorization: `Bearer ${botKey}` } : {};
+      const profileRes = await apiFetch(`/api/discord_profile?discord_user_id=${encodeURIComponent(discordId)}`, { headers: profileHeaders });
+      const profileBody = await profileRes.json();
+      if (profileBody.error) return await interaction.editReply({ content: `No linked profile: ${profileBody.message || 'link your account with /link'}` });
+      const username = profileBody.data?.profile?.username || 'unknown';
+      const headers = botKey ? { Authorization: `Bearer ${botKey}` } : {};
+      const ongoingRes = await apiFetch(`/api/view_ongoing?discord_user_id=${encodeURIComponent(discordId)}`, { headers });
+      const ongoingBody = await ongoingRes.json();
+      if (ongoingBody.error) return await interaction.editReply({ content: `Failed to fetch recent attacks: ${ongoingBody.message || 'unknown'}` });
+      const list = ongoingBody.ongoing || ongoingBody.recent || [];
+      const cont = buildRecentContainer(username, list);
+      await interaction.editReply({ components: [cont], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+    } catch (err) {
+      console.error('Recent command failed:', err);
+      await interaction.editReply({ content: `Failed to fetch recent attacks: ${err?.message || 'error'}` });
+    }
+    return;
+  }
+
+  if (interaction.commandName === 'admin') {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      if (!isDiscordAdmin(interaction) && !isDiscordOwner(interaction)) {
+        await interaction.editReply({ content: 'Admin commands are restricted to admins and owners.' });
+        return;
+      }
+      const subGroup = interaction.options.getSubcommandGroup(false);
+      const action = interaction.options.getSubcommand();
+      const username = interaction.options.getString('username') || interaction.options.getString('username_option');
+      const password = interaction.options.getString('password');
+      const preset = interaction.options.getString('preset_option');
+      const field = interaction.options.getString('field_option');
+      const newValue = interaction.options.getString('newvalue_option');
+
+      if (subGroup === 'user') {
+        if (action === 'create') {
+          const res = await apiFetch(`/api/admin/user_create?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&preset_option=${encodeURIComponent(preset)}`);
+          const body = await res.json();
+          if (body.error) return await interaction.editReply({ content: `Create failed: ${body.message || 'unknown'}` });
+          const container = buildAdminActionContainer('## 🛠️ Admin User Create', `Created user **${username}** successfully.`, [`Preset: ${preset}`]);
+          await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+          return;
+        }
+        if (action === 'delete') {
+          const res = await apiFetch(`/api/admin/user_delete?username=${encodeURIComponent(username)}`);
+          const body = await res.json();
+          if (body.error) return await interaction.editReply({ content: `Delete failed: ${body.message || 'unknown'}` });
+          const container = buildAdminActionContainer('## 🛠️ Admin User Delete', `Deleted user **${username}** successfully.`);
+          await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+          return;
+        }
+        if (action === 'edit') {
+          const res = await apiFetch(`/api/admin/user_edit?username=${encodeURIComponent(username)}&field=${encodeURIComponent(field)}&value=${encodeURIComponent(newValue)}`);
+          const body = await res.json();
+          if (body.error) return await interaction.editReply({ content: `Edit failed: ${body.message || 'unknown'}` });
+          const container = buildAdminActionContainer('## 🛠️ Admin User Edit', `Updated **${field}** for **${username}**.`, [`New value: ${newValue}`]);
+          await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+          return;
+        }
+        if (action === 'view') {
+          const res = await apiFetch(`/api/admin/user_view?username=${encodeURIComponent(username)}`);
+          const body = await res.json();
+          if (body.error) return await interaction.editReply({ content: `View failed: ${body.message || 'unknown'}` });
+          const infoLines = Object.entries(body.data || {}).map(([key, value]) => `**${key}:** ${value}`);
+          const container = buildInfoContainer(`## 🛠️ Admin User View: ${username}`, `Details for user **${username}**`, infoLines);
+          await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+          return;
+        }
+        if (action === 'logs') {
+          const res = await apiFetch(`/api/admin/user_logs?username=${encodeURIComponent(username)}`);
+          const body = await res.json();
+          if (body.error) return await interaction.editReply({ content: `Logs failed: ${body.message || 'unknown'}` });
+          const lines = (body.data?.logs || []).slice(0, 8).map((logEntry, index) => `**${index + 1}.** ${logEntry}`);
+          if (!lines.length) lines.push('No logs available.');
+          const container = buildInfoContainer(`## 🛠️ Admin User Logs: ${username}`, `Latest logs for **${username}**`, lines);
+          await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+          return;
+        }
+      }
+      await interaction.editReply({ content: 'Unknown admin command.' });
+    } catch (err) {
+      console.error('Admin command failed:', err);
+      await interaction.editReply({ content: `Admin command failed: ${err?.message || 'error'}` });
+    }
+    return;
+  }
+
+  if (interaction.commandName === 'owner') {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      if (!isDiscordOwner(interaction)) {
+        await interaction.editReply({ content: 'Owner commands are restricted to the configured owner.' });
+        return;
+      }
+      const action = interaction.options.getSubcommand();
+      if (action === 'reboot') {
+        await interaction.editReply({ content: 'Starting reboot: deploying and restarting the bot...' });
+        try {
+          exec('cd /var/www/CAPI && wrangler deploy', (error, stdout, stderr) => {
+            if (error) {
+              console.error('Reboot deploy failed:', error, stderr);
+              return;
+            }
+            console.log('Reboot deploy output:', stdout, stderr);
+            process.exit(0);
+          });
+        } catch (err) {
+          console.error('Reboot command failed:', err);
+        }
+        return;
+      }
+      if (interaction.options.getSubcommandGroup() === 'logs') {
+        const logAction = interaction.options.getSubcommand();
+        const username = interaction.options.getString('username_option');
+        if (logAction === 'delete') {
+          const res = await apiFetch(`/api/owner/logs_delete`);
+          const body = await res.json();
+          if (body.error) return await interaction.editReply({ content: `Owner log delete failed: ${body.message || 'unknown'}` });
+          const container = buildInfoContainer('## 🔐 Owner Logs Delete', 'Owner logs deleted successfully.', []);
+          await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+          return;
+        }
+        if (logAction === 'search') {
+          const res = await apiFetch(`/api/owner/logs_search?username=${encodeURIComponent(username)}`);
+          const body = await res.json();
+          if (body.error) return await interaction.editReply({ content: `Owner log search failed: ${body.message || 'unknown'}` });
+          const lines = (body.data?.logs || []).slice(0, 8).map((logEntry, index) => `**${index + 1}.** ${logEntry}`);
+          if (!lines.length) lines.push('No matching owner logs found.');
+          const container = buildInfoContainer('## 🔐 Owner Log Search', `Search results for **${username}**`, lines);
+          await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
+          return;
+        }
+      }
+      await interaction.editReply({ content: 'Unknown owner command.' });
+    } catch (err) {
+      console.error('Owner command failed:', err);
+      await interaction.editReply({ content: `Owner command failed: ${err?.message || 'error'}` });
+    }
     return;
   }
 
@@ -1061,9 +1388,10 @@ client.on('interactionCreate', async (interaction) => {
       if (serializationFailed) {
         // Build a minimal container fallback to ensure we can send Components V2
         const minimal = new ContainerBuilder()
-          .setAccentColor(0x95A5A6)
+          .setAccentColor(0x3498DB)
           .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ⚔️ Attack • ${attackState.targetLabel || host}`))
           .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**Method:** ${attackState.methodLabel || method} • **Time:** ${attackState.durationSeconds || time}s`));
+        appendCommandBanner(minimal);
         const actions = new ActionRowBuilder();
         if (attackState.attackId) actions.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('View (API)').setURL(`${API_CANDIDATES[0].replace(/\/$/, '')}/api/attack_status?id=${encodeURIComponent(attackState.attackId)}`));
         actions.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Refresh').setCustomId('attack_refresh'));
@@ -1082,9 +1410,10 @@ client.on('interactionCreate', async (interaction) => {
       // Fallback: send a minimal components V2 follow-up to avoid plain text
       try {
         const minimalFollow = new ContainerBuilder()
-          .setAccentColor(0x95A5A6)
-          .addTextDisplayComponents(new TextDisplayBuilder().setContent(`Attack accepted: ${attackState.targetLabel || host} • ${attackState.methodLabel || method} • ${attackState.durationSeconds || time}s`))
-          .addActionRowComponents(new ActionRowBuilder().addComponents(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Refresh').setCustomId('attack_refresh')));
+          .setAccentColor(0x3498DB)
+          .addTextDisplayComponents(new TextDisplayBuilder().setContent(`Attack accepted: ${attackState.targetLabel || host} • ${attackState.methodLabel || method} • ${attackState.durationSeconds || time}s`));
+        appendCommandBanner(minimalFollow);
+        minimalFollow.addActionRowComponents(new ActionRowBuilder().addComponents(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel('Refresh').setCustomId('attack_refresh')));
         await interaction.followUp({ components: [minimalFollow], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
       } catch (e) {
         console.error('Failed fallback followUp (components):', e);
@@ -1107,6 +1436,26 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   return;
+  } catch (err) {
+    console.error('Unhandled interaction handler error:', err);
+    try {
+      if (!interaction) return;
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp({ content: 'Internal error handling your command. Please try again later.', ephemeral: true });
+      } else {
+        await interaction.reply({ content: 'Internal error handling your command. Please try again later.', ephemeral: true });
+      }
+    } catch (replyErr) {
+      console.error('Failed to send error response for interaction:', replyErr);
+      try {
+        if (interaction.channel && typeof interaction.channel.send === 'function') {
+          await interaction.channel.send('Bot encountered an error. Please try again later.');
+        }
+      } catch (e) {
+        console.error('Failed to fallback send message after interaction error:', e);
+      }
+    }
+  }
 });
 
 console.log('Starting Discord bot...');
