@@ -1,19 +1,6 @@
 // Shared response helpers used by the API, admin, and lookup routes.
 import * as Vault from './vault-db.js';
-
-const DEFAULT_TIPS = [
-  'Double-check your target and method before sending the next request.',
-  'A clean setup usually performs better than a rushed one.',
-  'Keep your parameters tight and your timing consistent for smoother results.',
-  'Review the route and action before retrying to avoid wasted attempts.'
-];
-
-const DEFAULT_ADS = [
-  'Premium ad space is available for $5/month — place your brand where real traffic lands.',
-  'Want your product featured here? Reserve an ad slot for just $5/month and get noticed.',
-  'Grow your brand with a polished ad slot here for only $5/month.',
-  'This spot is open for sponsors — book it for $5/month and stand out.'
-];
+import { DEFAULT_TIPS, DEFAULT_ADS } from './config.js';
 
 let tipCursor = 0;
 let adCursor = 0;

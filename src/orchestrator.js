@@ -4,10 +4,10 @@ import * as Vault from './vault-db.js';
 import { apiHandler } from './api.js';
 import { adminHandler } from './admin.js';
 import { lookupHandler } from './lookup.js';
+import { DATABASE_CONFIG } from './config.js';
 
 let dbInitialized = false;
 let lastCleanupTime = 0;
-const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // Run cleanup every 5 minutes
 
 export async function handleRequest(request, env) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' } });
@@ -60,7 +60,7 @@ export async function handleRequest(request, env) {
 
   // Periodically cleanup old logs to prevent unbounded database growth
   const now = Date.now();
-  if (now - lastCleanupTime > CLEANUP_INTERVAL_MS) {
+  if (now - lastCleanupTime > DATABASE_CONFIG.CLEANUP_INTERVAL_MS) {
     lastCleanupTime = now;
     // Run cleanup in background (don't await to not block response)
     Vault.cleanupOldLogs(env, 30).catch(e => console.error('Background cleanup failed:', e.message));

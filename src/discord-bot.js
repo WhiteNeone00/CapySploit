@@ -4,6 +4,7 @@ import { Client, GatewayIntentBits, ActivityType, Partials, REST, Routes, SlashC
 import * as Vault from './vault-db.js';
 import { buildDiscordRoleNames, userPlanRole } from './discord.js';
 import { formatSlotBar } from './helpers.js';
+import { DISCORD_DEFAULTS, API_CONFIG } from './config.js';
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -36,7 +37,7 @@ function isDiscordOwner(interaction) {
 
 function buildInfoContainer(title, summary, lines = [], buttons = []) {
   const container = new ContainerBuilder()
-    .setAccentColor(0x3498DB)
+    .setAccentColor(DISCORD_DEFAULTS.ACCENT_COLOR)
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(title))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(summary))
     .addSeparatorComponents(new SeparatorBuilder());
@@ -150,7 +151,7 @@ client.on('disconnect', (event) => console.warn('Discord client disconnected:', 
 process.on('unhandledRejection', (reason) => console.error('Unhandled rejection:', reason));
 process.on('uncaughtException', (error) => console.error('Uncaught exception:', error));
 
-const DEFAULT_METHOD_NAMES = ['udp', 'tcp', 'http', 'https', 'cf-bypass', 'http-raw', 'https-raw', 'slowloris', 'tcp-flood', 'udp-flood'];
+const DEFAULT_METHOD_NAMES = DISCORD_DEFAULTS.DEFAULT_METHOD_NAMES;
 
 let statusIndex = 0;
 let cachedMethodNames = null;

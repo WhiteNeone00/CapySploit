@@ -1,5 +1,6 @@
 // Shared utility functions used across multiple modules
 // Extract duplicated and common functions here for DRY principle
+import { PAGINATION_CONFIG, API_CONFIG, RATE_LIMIT_CONFIG } from './config.js';
 
 /**
  * Fetch from primary URL, fallback to secondary if primary fails
@@ -75,11 +76,11 @@ export function sanitizeUsersForResponse(users) {
  * @returns {Object} { limit: validated_limit, offset: validated_offset }
  */
 export function validatePaginationParams(limit, offset) {
-  const maxLimit = 100; // Max 100 items per page
-  const minLimit = 1;
-  const minOffset = 0;
+  const maxLimit = PAGINATION_CONFIG.MAX_LIMIT;
+  const minLimit = PAGINATION_CONFIG.MIN_LIMIT;
+  const minOffset = PAGINATION_CONFIG.MIN_OFFSET;
   
-  let validLimit = parseInt(limit, 10) || 10; // Default 10
+  let validLimit = parseInt(limit, 10) || PAGINATION_CONFIG.DEFAULT_LIMIT;
   let validOffset = parseInt(offset, 10) || 0;
   
   validLimit = Math.max(minLimit, Math.min(maxLimit, validLimit));

@@ -3,6 +3,7 @@ import { jsonResponse, structuredResponse, parseQuery, routeNotFound, resolveSer
 import * as Vault from './vault-db.js';
 import { getPayloadMethods } from '../payload.js';
 import { sanitizeUserForResponse, sanitizeUsersForResponse, paginate, validatePaginationParams, buildMessage, buildMetadata, checkApiRateLimit, applyGlobalRateLimit } from './helpers.js';
+import { PASSWORD_CONFIG, ADMIN_PROTECTED_FIELDS, ADMIN_EDITABLE_FIELDS } from './config.js';
 
 // ==================== UTILITY FUNCTIONS ====================
 
@@ -17,12 +18,12 @@ import { sanitizeUserForResponse, sanitizeUsersForResponse, paginate, validatePa
  *   const pwd = generatePassword(16);  // 16-char password with mixed charset
  *   const pwd2 = generatePassword();   // 12-char password (default)
  */
-function generatePassword(length = 12) {
+function generatePassword(length = PASSWORD_CONFIG.DEFAULT_LENGTH) {
   // Generate a secure random password with uppercase, lowercase, numbers, symbols
-  const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  const lowercase = 'abcdefghijklmnopqrstuvwxyz';
-  const numbers = '0123456789';
-  const symbols = '!@#$%^&*()-_=+';
+  const uppercase = PASSWORD_CONFIG.UPPERCASE;
+  const lowercase = PASSWORD_CONFIG.LOWERCASE;
+  const numbers = PASSWORD_CONFIG.NUMBERS;
+  const symbols = PASSWORD_CONFIG.SYMBOLS;
   const all = uppercase + lowercase + numbers + symbols;
   
   let password = '';
@@ -55,16 +56,16 @@ function generatePassword(length = 12) {
  */
 function validatePassword(password) {
   // Password should be at least 8 chars, have uppercase, lowercase, number
-  if (!password || password.length < 8) {
-    return { valid: false, reason: 'Password must be at least 8 characters long.' };
+  if (!password || password.length < PASSWORD_CONFIG.REQUIREMENT.minLength) {
+    return { valid: false, reason: `Password must be at least ${PASSWORD_CONFIG.REQUIREMENT.minLength} characters long.` };
   }
-  if (!/[A-Z]/.test(password)) {
+  if (PASSWORD_CONFIG.REQUIREMENT.hasUppercase && !/[A-Z]/.test(password)) {
     return { valid: false, reason: 'Password must contain at least one uppercase letter.' };
   }
-  if (!/[a-z]/.test(password)) {
+  if (PASSWORD_CONFIG.REQUIREMENT.hasLowercase && !/[a-z]/.test(password)) {
     return { valid: false, reason: 'Password must contain at least one lowercase letter.' };
   }
-  if (!/[0-9]/.test(password)) {
+  if (PASSWORD_CONFIG.REQUIREMENT.hasNumbers && !/[0-9]/.test(password)) {
     return { valid: false, reason: 'Password must contain at least one number.' };
   }
   return { valid: true, reason: 'OK' };
