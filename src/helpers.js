@@ -1,33 +1,314 @@
 // Shared utility functions used across multiple modules
 // Extract duplicated and common functions here for DRY principle
-import { PAGINATION_CONFIG, API_CONFIG, RATE_LIMIT_CONFIG } from './config.js';
+import { PAGINATION_CONFIG, API_CONFIG, RATE_LIMIT_CONFIG, FAILED_AUTH_CONFIG, TIMEOUT_CONFIG, CACHE_CONFIG, CONCURRENCY_CONFIG } from './config.js';
 
-/**
- * Fetch from primary URL, fallback to secondary if primary fails
- * Ensures API always works even if primary domain is temporarily down
- * @param {string} path - API path to request
- * @param {Array<string>} urlCandidates - Array of URLs to try [primary, secondary, ...]
- * @param {Object} options - Fetch options
- * @returns {Promise<Response>} Fetch response
- */
-export async function fetchWithFallback(path, urlCandidates, options = {}) {
-  // Filter out empty URLs
-  const urls = (urlCandidates || []).filter(Boolean);
-  if (urls.length === 0) throw new Error('No valid URLs provided');
+// ==================== IN-MEMORY CACHE LAYER ====================
+// Lightweight cache with TTL support for frequently accessed data
+// Reduces repeated D1 database queries for hot reads
+
+class CacheEntry {
+  constructor(value, ttlMs) {
+    this.value = value;
+    this.expiresAt = Date.now() + ttlMs;
+  }
   
-  let lastError = null;
-  for (const baseUrl of urls) {
-    try {
-      const fullUrl = `${baseUrl}${path}`;
-      const response = await fetch(fullUrl, options);
-      if (response.ok) return response;
-      lastError = new Error(`HTTP ${response.status}`);
-    } catch (error) {
-      lastError = error;
-      // Continue to next URL
+  isExpired() {
+    return Date.now() > this.expiresAt;
+  }
+}
+
+class CacheStore {
+  constructor() {
+    this.data = new Map();
+  }
+  
+  get(key) {
+    const entry = this.data.get(key);
+    if (!entry) return null;
+    if (entry.isExpired()) {
+      this.data.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+  
+  set(key, value, ttlMs = CACHE_CONFIG.DEFAULT_TTL_MS) {
+    this.data.set(key, new CacheEntry(value, ttlMs));
+  }
+  
+  delete(key) {
+    this.data.delete(key);
+  }
+  
+  clear() {
+    this.data.clear();
+  }
+  
+  cleanup() {
+    const now = Date.now();
+    for (const [key, entry] of this.data.entries()) {
+      if (entry.isExpired()) {
+        this.data.delete(key);
+      }
     }
   }
-  throw lastError || new Error('All fallback URLs failed');
+  
+  size() {
+    return this.data.size;
+  }
+}
+
+// Initialize cache stores for different data types
+const userCache = new CacheStore();
+const methodCache = new CacheStore();
+const systemSettingsCache = new CacheStore();
+
+/**
+ * Get cached user metadata
+ * @param {string} username - Username to fetch
+ * @param {Function} fetchFn - Function to call if not cached
+ * @returns {Promise<Object>} User object
+ */
+export async function getCachedUser(username, fetchFn) {
+  const cacheKey = `user:${username}`;
+  const cached = userCache.get(cacheKey);
+  if (cached) return cached;
+  
+  const user = await fetchFn(username);
+  if (user) {
+    userCache.set(cacheKey, user, CACHE_CONFIG.USER_TTL_MS);
+  }
+  return user;
+}
+
+/**
+ * Invalidate cached user
+ * @param {string} username - Username to invalidate
+ */
+export function invalidateUserCache(username) {
+  userCache.delete(`user:${username}`);
+}
+
+/**
+ * Get cached method list
+ * @param {Function} fetchFn - Function to call if not cached
+ * @returns {Promise<Array>} Array of methods
+ */
+export async function getCachedMethods(fetchFn) {
+  const cacheKey = 'methods:all';
+  const cached = methodCache.get(cacheKey);
+  if (cached) return cached;
+  
+  const methods = await fetchFn();
+  if (methods) {
+    methodCache.set(cacheKey, methods, CACHE_CONFIG.METHOD_TTL_MS);
+  }
+  return methods;
+}
+
+/**
+ * Invalidate method cache
+ */
+export function invalidateMethodCache() {
+  methodCache.clear();
+}
+
+/**
+ * Get cached method metadata map
+ * Creates a Map once and reuses it, with TTL invalidation
+ * @param {Function} fetchFn - Function to call if cache miss
+ * @returns {Promise<Map>} Map of method_name -> metadata
+ */
+export async function getCachedMethodMap(fetchFn) {
+  const cacheKey = 'methods:map';
+  let cached = methodCache.get(cacheKey);
+  if (cached) return cached;
+  
+  const methods = await fetchFn();
+  if (methods && Array.isArray(methods)) {
+    const methodMap = new Map(
+      (methods || []).map((item) => [String(item?.name || '').toLowerCase(), item])
+    );
+    methodCache.set(cacheKey, methodMap, CACHE_CONFIG.METHOD_TTL_MS);
+    return methodMap;
+  }
+  return new Map();
+}
+
+/**
+ * Get cached system setting
+ * @param {string} key - Setting key
+ * @param {Function} fetchFn - Function to call if not cached
+ * @returns {Promise<any>} Setting value
+ */
+export async function getCachedSystemSetting(key, fetchFn) {
+  const cacheKey = `setting:${key}`;
+  const cached = systemSettingsCache.get(cacheKey);
+  if (cached !== null) return cached;
+  
+  const value = await fetchFn(key);
+  if (value !== null) {
+    systemSettingsCache.set(cacheKey, value, CACHE_CONFIG.SETTING_TTL_MS);
+  }
+  return value;
+}
+
+/**
+ * Invalidate system setting cache
+ * @param {string} key - Setting key to invalidate (or null to clear all)
+ */
+export function invalidateSystemSettingCache(key = null) {
+  if (key === null) {
+    systemSettingsCache.clear();
+  } else {
+    systemSettingsCache.delete(`setting:${key}`);
+  }
+}
+
+/**
+ * Cleanup expired cache entries (run periodically)
+ */
+export function cleanupCacheStores() {
+  userCache.cleanup();
+  methodCache.cleanup();
+  systemSettingsCache.cleanup();
+}
+
+// ==================== FAILED AUTH ATTEMPT TRACKING ====================
+// In-memory store for tracking failed authentication attempts
+// Format: { username: [{ timestamp, attempts }, ...] }
+const failedAuthAttempts = new Map();
+
+/**
+ * Track a failed authentication attempt for a user
+ * @param {string} username - Username that failed auth
+ * @returns {number} Total failed attempts in current window
+ */
+export function trackFailedAuthAttempt(username) {
+  if (!FAILED_AUTH_CONFIG.ENABLED) return 0;
+  
+  const now = Date.now();
+  const windowStart = now - FAILED_AUTH_CONFIG.ATTEMPT_WINDOW_MS;
+  
+  if (!failedAuthAttempts.has(username)) {
+    failedAuthAttempts.set(username, []);
+  }
+  
+  const attempts = failedAuthAttempts.get(username);
+  
+  // Remove old attempts outside the window
+  const validAttempts = attempts.filter(t => t > windowStart);
+  validAttempts.push(now);
+  failedAuthAttempts.set(username, validAttempts);
+  
+  return validAttempts.length;
+}
+
+/**
+ * Get current failed authentication attempt count
+ * @param {string} username - Username to check
+ * @returns {Object} { attempts: number, limit: number, isLocked: boolean }
+ */
+export function getFailedAuthAttempts(username) {
+  if (!FAILED_AUTH_CONFIG.ENABLED) {
+    return { attempts: 0, limit: FAILED_AUTH_CONFIG.MAX_ATTEMPTS, isLocked: false };
+  }
+
+  const now = Date.now();
+  const attemptWindowStart = now - FAILED_AUTH_CONFIG.ATTEMPT_WINDOW_MS;
+  const lockoutWindowStart = now - FAILED_AUTH_CONFIG.LOCKOUT_WINDOW_MS;
+  const attempts = failedAuthAttempts.get(username) || [];
+
+  const recentAttempts = attempts.filter(t => t > attemptWindowStart);
+  const lockoutAttempts = attempts.filter(t => t > lockoutWindowStart);
+  const isLocked = lockoutAttempts.length >= FAILED_AUTH_CONFIG.MAX_ATTEMPTS;
+
+  return {
+    attempts: recentAttempts.length,
+    limit: FAILED_AUTH_CONFIG.MAX_ATTEMPTS,
+    isLocked,
+    nextAttemptAvailable: isLocked
+      ? Math.max(0, Math.ceil((lockoutAttempts[0] + FAILED_AUTH_CONFIG.LOCKOUT_WINDOW_MS - now) / 1000))
+      : 0
+  };
+}
+
+/**
+ * Clear failed auth attempts after successful authentication
+ * @param {string} username - Username to clear
+ */
+export function clearFailedAuthAttempts(username) {
+  failedAuthAttempts.delete(username);
+}
+
+/**
+ * Clean up expired auth attempts (run periodically)
+ */
+export function cleanupExpiredAuthAttempts() {
+  const now = Date.now();
+  const windowStart = now - FAILED_AUTH_CONFIG.ATTEMPT_WINDOW_MS;
+  
+  for (const [username, attempts] of failedAuthAttempts.entries()) {
+    const validAttempts = attempts.filter(t => t > windowStart);
+    if (validAttempts.length === 0) {
+      failedAuthAttempts.delete(username);
+    } else {
+      failedAuthAttempts.set(username, validAttempts);
+    }
+  }
+}
+
+// ==================== TIMEOUT & DURATION TRACKING ====================
+
+/**
+ * Track request duration for monitoring and timeout warnings
+ * @param {string} requestId - Unique request identifier
+ * @param {number} startTime - Request start time (Date.now())
+ * @returns {Object} Duration info: { elapsed: ms, remaining: ms, isWarning: bool, percentage: number }
+ */
+export function getRequestDuration(requestId, startTime, maxDurationMs = TIMEOUT_CONFIG.DEFAULT_TIMEOUT_MS) {
+  const now = Date.now();
+  const elapsed = now - startTime;
+  const remaining = Math.max(0, maxDurationMs - elapsed);
+  const percentage = Math.round((elapsed / maxDurationMs) * 100);
+  const isWarning = elapsed > TIMEOUT_CONFIG.WARNING_THRESHOLD_MS;
+  
+  return {
+    elapsed,
+    remaining,
+    isWarning,
+    percentage,
+    exceeded: elapsed > maxDurationMs
+  };
+}
+
+/**
+ * Wrap a promise with a timeout
+ * Rejects if operation exceeds timeout duration
+ * @param {Promise} promise - Promise to wrap
+ * @param {number} timeoutMs - Timeout in milliseconds
+ * @param {string} label - Operation label for error message
+ * @returns {Promise} Original promise or timeout error
+ * @throws {Error} Timeout error if promise exceeds duration
+ * @example
+ *   const result = await withTimeout(
+ *     fetch('https://api.example.com/data'),
+ *     5000,
+ *     'fetch external API'
+ *   );
+ */
+export async function withTimeout(promise, timeoutMs, label = 'Operation') {
+  if (!TIMEOUT_CONFIG.ENABLED || !timeoutMs) return promise;
+  
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+        timeoutMs
+      )
+    )
+  ]);
 }
 
 /**
@@ -217,197 +498,172 @@ export function generateAttackId() {
   return parseInt(`${timestamp}${String(random).padStart(5, '0')}`, 10);
 }
 
-/**
- * Validate payload length parameter
- * @param {any} value - Length value from query
- * @returns {number} Validated length (default 72)
- */
-export function validatePayloadLength(value) {
-  const len = parseInt(value, 10);
-  if (Number.isNaN(len) || len < 0) return 72; // Default
-  if (len > 65535) return 65535; // Max reasonable payload
-  return len;
-}
+// ==================== CONCURRENCY LIMITS & SEMAPHORE ====================
+// Manages concurrent attack processing and HTTP request limits
 
-/**
- * Standardized response data builder
- * Ensures consistent field ordering and structure across all responses
- * @param {Object} data - Data to structure
- * @param {string} type - Response type (user, attack, plan, stats, etc.)
- * @returns {Object} Standardized response data
- */
-export function buildStructuredData(data, type = 'generic') {
-  if (type === 'attack') {
-    return {
-      attack_id: data.attack_id,
-      target: data.target,
-      port: data.port,
-      method: data.method,
-      time_used: data.time_used,
-      len: data.len,
-      threads: data.threads,
-      rps: data.rps,
-      geo: data.geo,
-      target_asn: data.target_asn,
-      target_city: data.target_city,
-      target_country: data.target_country,
-      target_country_code: data.target_country_code,
-      target_isp: data.target_isp,
-      target_org: data.target_org,
-      target_region: data.target_region,
-      target_timezone: data.target_timezone,
-      target_zip: data.target_zip,
-      username: data.username,
-      max_time: data.max_time,
-      min_time: data.min_time,
-      max_concurrents: data.max_concurrents,
-      method_max_slots: data.method_max_slots,
-      method_active_slots: data.method_active_slots,
-      cooldown: data.cooldown,
-      attacks_remaining: data.attacks_remaining,
-      bypass_slots: data.bypass_slots,
-      holder_status: data.holder_status,
-      vip_status: data.vip_status,
-      api_status: data.api_status,
-      admin_status: data.admin_status,
-      power_saving: data.power_saving,
-      bypass_power: data.bypass_power,
-      time_to_send: data.time_to_send
-    };
+class Semaphore {
+  constructor(maxConcurrent = 50) {
+    this.maxConcurrent = maxConcurrent;
+    this.current = 0;
+    this.waiting = [];
+    this.lastCleanup = Date.now();
   }
   
-  if (type === 'user') {
-    return {
-      username: data.username,
-      admin: data.admin,
-      reseller: data.reseller,
-      vip: data.vip,
-      holder: data.holder,
-      api_access: data.api_access,
-      max_time: data.max_time,
-      min_time: data.min_time,
-      cooldown: data.cooldown,
-      concurrents: data.concurrents,
-      max_daily_attacks: data.max_daily_attacks,
-      attacks_remaining: data.attacks_remaining,
-      power_saving: data.power_saving,
-      bypass_power: data.bypass_power,
-      bypass_slots: data.bypass_slots,
-      suspended: data.suspended,
-      created_by: data.created_by,
-      created_at: data.created_at,
-      expiry_unix: data.expiry_unix,
-      service_name: data.service_name
-    };
-  }
-  
-  if (type === 'plan') {
-    return {
-      username: data.username,
-      admin: data.admin,
-      reseller: data.reseller,
-      vip: data.vip,
-      holder: data.holder,
-      api_access: data.api_access,
-      max_time: data.max_time,
-      min_time: data.min_time,
-      cooldown: data.cooldown,
-      concurrents: data.concurrents,
-      max_daily_attacks: data.max_daily_attacks,
-      attacks_remaining: data.attacks_remaining,
-      power_saving: data.power_saving,
-      bypass_power: data.bypass_power,
-      bypass_slots: data.bypass_slots,
-      method_max_slots: data.method_max_slots,
-      suspended: data.suspended,
-      created_by: data.created_by,
-      plan_type: data.plan_type,
-      rank: data.rank,
-      discord_linked: data.discord_linked,
-      warnings: data.warnings
-    };
-  }
-  
-  return data;
-}
-
-/**
- * Build standardized success message
- * @param {string} action - Action performed (created, updated, retrieved, etc.)
- * @param {string} entity - Entity type (user, attack, method, etc.)
- * @param {any} count - Number of items (optional)
- * @returns {string} Standardized message
- */
-export function buildMessage(action, entity, count = null) {
-  const messages = {
-    created: `${entity} created successfully${count ? ` (${count} total)` : ''}.`,
-    updated: `${entity} updated successfully.`,
-    deleted: `${entity} deleted successfully.`,
-    retrieved: `${entity} retrieved successfully${count ? ` (${count} found)` : ''}.`,
-    listed: `${entity} list retrieved${count ? ` (${count} items)` : ''}.`,
-    accepted: `${entity} accepted and processing.`,
-    completed: `${entity} completed successfully.`,
-    suspended: `${entity} has been suspended.`,
-    resumed: `${entity} has been resumed.`,
-    linked: `${entity} linked successfully.`,
-    unlinked: `${entity} unlinked successfully.`,
-    verified: `${entity} verified successfully.`,
-    generated: `${entity} generated successfully.`,
-    synced: `${entity} synchronized${count ? ` (${count} items)` : ''}.`,
-    enabled: `${entity} enabled.`,
-    disabled: `${entity} disabled.`
-  };
-  
-  return messages[action] || `Operation completed for ${entity}.`;
-}
-
-/**
- * Auto-create missing entity in database
- * @param {string} type - Entity type (user, method, blacklist, etc.)
- * @param {Object} entity - Entity data
- * @param {Object} env - Environment/database
- * @returns {Promise<Object>} Created entity or existing
- */
-export async function autoCreateIfMissing(type, entity, env) {
-  if (type === 'method' && entity.name) {
-    const Vault = await import('./vault-db.js');
-    const existing = await Vault.listMethods(env);
-    const found = existing?.find(m => (m.name || '').toLowerCase() === entity.name.toLowerCase());
-    if (!found) {
-      await Vault.addMethod(env, { 
-        name: entity.name, 
-        description: entity.description || `${entity.name} attack method` 
+  async acquire(timeout = 30000) {
+    if (this.current < this.maxConcurrent) {
+      this.current++;
+      return true;
+    }
+    
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        // Remove from queue on timeout
+        const idx = this.waiting.indexOf(resolve);
+        if (idx >= 0) this.waiting.splice(idx, 1);
+        resolve(false); // Indicate timeout
+      }, timeout);
+      
+      this.waiting.push(() => {
+        clearTimeout(timer);
+        resolve(true);
       });
-      return { created: true, name: entity.name };
-    }
-    return { created: false, name: entity.name };
+    });
   }
   
-  if (type === 'blacklist' && entity.target) {
-    const Vault = await import('./vault-db.js');
-    const existing = await Vault.listBlacklist(env);
-    const found = existing?.find(b => b.target === entity.target);
-    if (!found) {
-      await Vault.addBlacklistTarget(env, entity.target, entity.reason || 'auto-added');
-      return { created: true, target: entity.target };
+  release() {
+    if (this.current > 0) this.current--;
+    const resolve = this.waiting.shift();
+    if (resolve) {
+      this.current++;
+      resolve();
     }
-    return { created: false, target: entity.target };
   }
   
-  return { created: false };
+  available() {
+    return Math.max(0, this.maxConcurrent - this.current);
+  }
+  
+  capacity() {
+    return {
+      current: this.current,
+      max: this.maxConcurrent,
+      available: this.available(),
+      utilization: (this.current / this.maxConcurrent) * 100
+    };
+  }
+}
+
+// Global semaphores for concurrency control
+const globalAttackSemaphore = new Semaphore(CONCURRENCY_CONFIG.MAX_CONCURRENT_ATTACKS);
+const outgoingRequestSemaphore = new Semaphore(CONCURRENCY_CONFIG.MAX_OUTGOING_REQUESTS);
+const userConcurrencyLimits = new Map(); // Tracks per-user concurrent attacks
+
+/**
+ * Get or create semaphore for a user
+ * @param {string} username - Username
+ * @returns {Semaphore} Semaphore for this user
+ */
+function getUserSemaphore(username) {
+  if (!userConcurrencyLimits.has(username)) {
+    userConcurrencyLimits.set(
+      username,
+      new Semaphore(CONCURRENCY_CONFIG.MAX_ATTACKS_PER_USER)
+    );
+  }
+  return userConcurrencyLimits.get(username);
 }
 
 /**
- * Build metadata object for responses
- * @param {Object} options - Metadata options
- * @returns {Object} Metadata object
+ * Acquire concurrency slots for an attack launch
+ * Checks both global and per-user limits
+ * @param {string} username - Username launching attack
+ * @param {number} slotsNeeded - Number of concurrency slots needed
+ * @param {number} timeout - Timeout in milliseconds
+ * @returns {Promise<Object>} { acquired: boolean, global: capacity, user: capacity, backpressure: boolean }
  */
-export function buildMetadata(options = {}) {
+export async function acquireAttackSlots(username, slotsNeeded = 1, timeout = 10000) {
+  const globalCapacity = globalAttackSemaphore.capacity();
+  const userSem = getUserSemaphore(username);
+  const userCapacity = userSem.capacity();
+  
+  // Check if we're at backpressure threshold
+  const globalBackpressure = globalCapacity.utilization > (CONCURRENCY_CONFIG.BACKPRESSURE_THRESHOLD * 100);
+  const userBackpressure = userCapacity.utilization > (CONCURRENCY_CONFIG.BACKPRESSURE_THRESHOLD * 100);
+  
+  // Try to acquire slots
+  const globalAcquired = await globalAttackSemaphore.acquire(timeout);
+  if (!globalAcquired) {
+    return {
+      acquired: false,
+      reason: 'global_limit_reached',
+      global: globalCapacity,
+      user: userCapacity,
+      backpressure: globalBackpressure,
+      hint: 'System is at capacity. Please retry shortly.'
+    };
+  }
+  
+  const userAcquired = await userSem.acquire(timeout);
+  if (!userAcquired) {
+    globalAttackSemaphore.release();
+    return {
+      acquired: false,
+      reason: 'user_limit_reached',
+      global: globalCapacity,
+      user: userCapacity,
+      backpressure: userBackpressure,
+      hint: 'You have reached your concurrent attack limit.'
+    };
+  }
+  
   return {
-    timestamp: new Date().toISOString(),
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    version: '1.0.0',
-    ...options
+    acquired: true,
+    reason: 'success',
+    global: globalCapacity,
+    user: userCapacity,
+    backpressure: globalBackpressure || userBackpressure,
+    hint: null
   };
 }
+
+/**
+ * Release concurrency slots after attack completes
+ * @param {string} username - Username who launched attack
+ */
+export function releaseAttackSlots(username) {
+  globalAttackSemaphore.release();
+  const userSem = getUserSemaphore(username);
+  userSem.release();
+}
+
+/**
+ * Acquire slot for an outgoing HTTP request
+ * Prevents overwhelming external services
+ * @param {number} timeout - Timeout in milliseconds
+ * @returns {Promise<boolean>} True if slot acquired
+ */
+export async function acquireOutgoingRequestSlot(timeout = 5000) {
+  return outgoingRequestSemaphore.acquire(timeout);
+}
+
+/**
+ * Release slot for an outgoing HTTP request
+ */
+export function releaseOutgoingRequestSlot() {
+  outgoingRequestSemaphore.release();
+}
+
+/**
+ * Get current concurrency capacity info
+ * @returns {Object} Capacity info for monitoring
+ */
+export function getConcurrencyStatus() {
+  return {
+    global_attacks: globalAttackSemaphore.capacity(),
+    outgoing_requests: outgoingRequestSemaphore.capacity(),
+    active_users: userConcurrencyLimits.size
+  };
+}
+
+
 

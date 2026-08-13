@@ -752,31 +752,6 @@ Success (200): `{ "error": false, "message": "user suspended", "user": "<usernam
 ### GET /admin/unsuspend_user
 Success (200): `{ "error": false, "message": "user unsuspended", "user": "<username>" }`.
 
-### GET /admin/key_info
-Response (200):
-
-```json
-{
-  "error": false,
-  "message": "license info loaded",
-  "data": {
-    "created_by": "root",
-    "days_remaining": "973.69",
-    "dev_infos": "capi.dev",
-    "dlc_status": "true",
-    "ip_address": "IP ADDRESS",
-    "license_key": "License Key",
-    "product_name": "CAPI / CapySploit",
-    "royal_src_version": "1.8.7.2"
-  },
-  "timestamp": "<timestamp>",
-  "service": "CAPI",
-  "version": "1.0.0",
-  "tips": "<tip>",
-  "ads": "<ad>"
-}
-```
-
 ---
 
 # /lookup endpoints

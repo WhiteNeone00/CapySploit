@@ -1,13 +1,12 @@
 // Lookup route handlers for external service lookups.
 import { jsonResponse, parseQuery, routeNotFound } from './response.js';
+import { LOOKUP_SERVICES, APP_DEFAULTS } from './config.js';
 
 async function ipLookup(ipOrHost) {
   const target = String(ipOrHost || '').trim();
   if (!target) return null;
 
-  const lookupUrls = [
-    `http://ip-api.com/json/${encodeURIComponent(target)}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query`
-  ];
+  const lookupUrls = (LOOKUP_SERVICES.IP_LOOKUP_URLS || []).map((template) => template.replace('{target}', encodeURIComponent(target)));
 
   for (const url of lookupUrls) {
     try {
@@ -23,10 +22,7 @@ async function ipLookup(ipOrHost) {
 }
 
 async function fetchMinecraftServer(addr) {
-  const candidates = [
-    `https://api.mcsrvstat.us/2/${encodeURIComponent(addr)}`,
-    `https://api.mcstatus.io/v2/status/java/${encodeURIComponent(addr)}`
-  ];
+  const candidates = (LOOKUP_SERVICES.MINECRAFT_LOOKUP_URLS || []).map((template) => template.replace('{target}', encodeURIComponent(addr)));
 
   for (const url of candidates) {
     try {
@@ -46,7 +42,7 @@ async function fetchMinecraftServer(addr) {
   return null;
 }
 
-export async function lookupHandler(parts, request, env) {
+export async function lookupHandler(parts, request, env, requestId, logger, requestContext = {}) {
   const endpoint = parts[0] || '';
   const q = parseQuery(request);
 
@@ -54,7 +50,7 @@ export async function lookupHandler(parts, request, env) {
     const code = q.cfx_code || q.code || q.server || q.server_id || q.address;
     if (!code) return jsonResponse({ error: true, message: 'missing cfx_code' }, 400);
     try {
-      const res = await fetch(`https://servers-frontend.fivem.net/api/servers/single/${encodeURIComponent(code)}`);
+      const res = await fetch((LOOKUP_SERVICES.FIVEM_LOOKUP_URLS[0] || APP_DEFAULTS.FIVEM_LOOKUP_FALLBACK_URL).replace('{target}', encodeURIComponent(code)));
       if (!res.ok) {
         return jsonResponse({ error: true, message: 'cfx server not found' }, 404);
       }

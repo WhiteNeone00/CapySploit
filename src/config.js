@@ -4,6 +4,42 @@
 // Centralized configuration file for all hardcoded values.
 // Modify here to change API behavior globally without touching business logic.
 
+// ==================== APP DEFAULTS & FALLBACKS ====================
+export const APP_DEFAULTS = {
+  SERVICE_NAME: 'CAPI',
+  SRC_NAME: 'CapySploit',
+  API_BASE_URL: 'https://capi.capysploit.workers.dev',
+  API_BASE_URL_FALLBACK: 'https://capi.insideproxy.me',
+  ROOT_USERNAME: 'root',
+  ROOT_PASSWORD: 'admin123',
+  DISCORD_API_BASE_URL: 'https://discord.com/api/v10',
+  DISCORD_ROLE_API_URL: 'https://discord.com/api/v10',
+  ATTACK_CARD_IMAGE_URL: 'https://discord-webhook.com/uploads/5ab0b46dde847b81e431d78bf9c9757d.webp',
+  MINECRAFT_ICON_URL: 'https://static.wikia.nocookie.net/minecraft_gamepedia/images/6/6b/Minecraft.png',
+  FIVEM_ICON_URL: 'https://wiki.fivem.net/images/f/f8/FiveM_icon.png',
+  GOOGLE_DOMAIN_ICON_URL: 'https://www.gstatic.com/images/branding/product/1x/domains_48dp.png',
+  FLAG_ICON_URL_TEMPLATE: 'https://flagcdn.com/w80/{code}.png',
+  WHOIS_BASE_URL: 'https://whois.domaintools.com',
+  IP_LOOKUP_FALLBACK_URL: 'http://ip-api.com/json/{target}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query',
+  FIVEM_LOOKUP_FALLBACK_URL: 'https://servers-frontend.fivem.net/api/servers/single/{target}',
+  DEFAULT_SERVICE_NAME: 'CAPI'
+};
+
+export const DEFAULT_ROOT_CREDENTIALS = {
+  username: APP_DEFAULTS.ROOT_USERNAME,
+  password: APP_DEFAULTS.ROOT_PASSWORD
+};
+
+export const USER_LIMITS = {
+  DEFAULT_MAX_TIME: 60,
+  DEFAULT_COOLDOWN: 10,
+  DEFAULT_MAX_CONCURRENTS: 1,
+  DEFAULT_MAX_DAILY_ATTACKS: 100,
+  DEFAULT_WARNING_LIMIT: 5,
+  DAILY_WARNING_RESET_MS: 24 * 60 * 60 * 1000,
+  DISCORD_LINK_TTL_MS: 10 * 60 * 1000
+};
+
 // ==================== TIPS & ADVERTISEMENTS ====================
 export const DEFAULT_TIPS = [
   'Double-check your target and method before sending the next request.',
@@ -52,12 +88,54 @@ export const RATE_LIMIT_CONFIG = {
   ]
 };
 
+// ==================== FAILED AUTH RATE LIMITING ====================
+export const FAILED_AUTH_CONFIG = {
+  ENABLED: true,
+  MAX_ATTEMPTS: 5,                    // Max failed attempts
+  LOCKOUT_WINDOW_MINUTES: 15,         // Lock out for 15 minutes
+  LOCKOUT_WINDOW_MS: 15 * 60 * 1000,  // 900,000 ms
+  ATTEMPT_WINDOW_MINUTES: 15,         // Count attempts within 15 minutes
+  ATTEMPT_WINDOW_MS: 15 * 60 * 1000   // 900,000 ms
+};
+
 // ==================== PAGINATION ====================
 export const PAGINATION_CONFIG = {
   DEFAULT_LIMIT: 10,
   MAX_LIMIT: 100,
   MIN_LIMIT: 1,
   MIN_OFFSET: 0
+};
+
+// ==================== CACHE CONFIGURATION ====================
+export const CACHE_CONFIG = {
+  ENABLED: true,
+  DEFAULT_TTL_MS: 60000,           // 60 seconds default
+  USER_TTL_MS: 15000,              // 15 seconds for user metadata (5-30s range)
+  METHOD_TTL_MS: 300000,           // 5 minutes for method/role lists (1-5 min range)
+  SETTING_TTL_MS: 600000,          // 10 minutes for system settings (1-10 min range)
+  CLEANUP_INTERVAL_MS: 60000       // Run cleanup every 60 seconds
+};
+
+// ==================== CONCURRENCY LIMITS ====================
+export const CONCURRENCY_CONFIG = {
+  ENABLED: true,
+  MAX_CONCURRENT_ATTACKS: 50,           // Global limit for concurrent attack fanouts
+  MAX_ATTACKS_PER_USER: 3,              // Max concurrent attacks per user
+  MAX_OUTGOING_REQUESTS: 100,           // Max concurrent outgoing HTTP requests
+  BACKPRESSURE_THRESHOLD: 0.8,          // Start backpressure at 80% capacity
+  SEMAPHORE_CLEANUP_INTERVAL_MS: 300000 // Cleanup inactive semaphores every 5 minutes
+};
+
+// ==================== REQUEST TIMEOUT CONFIGURATION ====================
+export const TIMEOUT_CONFIG = {
+  ENABLED: true,
+  DEFAULT_TIMEOUT_MS: 30000,           // 30 seconds default
+  API_TIMEOUT_MS: 25000,               // API requests (attacks, lookups)
+  EXTERNAL_LOOKUP_TIMEOUT_MS: 10000,   // IP lookups, Minecraft, FiveM
+  DATABASE_TIMEOUT_MS: 5000,           // Database operations
+  DISCORD_TIMEOUT_MS: 8000,            // Discord API calls
+  ATTACK_LAUNCH_TIMEOUT_MS: 5000,      // Attack fanout timeout
+  WARNING_THRESHOLD_MS: 20000           // Warn if approaching limit
 };
 
 // ==================== ADMIN FIELD PROTECTION ====================
@@ -75,14 +153,11 @@ export const ADMIN_PROTECTED_FIELDS = [
 
 export const ADMIN_EDITABLE_FIELDS = [
   'max_time',
-  'min_time',
   'cooldown',
   'max_concurrents',
   'max_daily_attacks',
   'bypass_anti_spam',
-  'power_saving',
-  'allowed_methods',
-  'allowed_targets'
+  'power_saving'
 ];
 
 // ==================== DISCORD DEFAULTS ====================
@@ -106,7 +181,7 @@ export const API_CONFIG = {
   DEFAULT_PAYLOAD_LENGTH: 72,
   MAX_PAYLOAD_LENGTH: 65535,
   MIN_PAYLOAD_LENGTH: 1,
-  AVERAGE_EXECUTION_TIME_SECONDS: 45,
+  AVERAGE_EXECUTION_TIME_SECONDS: 10,
   SLOT_BAR_WIDTH: 10,
   SLOT_EMPTY_CHAR: '⬜',
   SLOT_FILLED_CHAR: '🔵'
@@ -114,22 +189,22 @@ export const API_CONFIG = {
 
 // ==================== DATABASE & CLEANUP ====================
 export const DATABASE_CONFIG = {
-  CLEANUP_INTERVAL_MS: 5 * 60 * 1000,  // Run cleanup every 5 minutes
-  LOG_RETENTION_DAYS: 30,              // Keep logs for 30 days
-  TABLES: ['users', 'logs', 'ongoing_attacks', 'attack_queue', 'blacklist', 'discord_links', 'methods', 'ranks', 'plans', 'presets']
+  CLEANUP_INTERVAL_MS: 5 * 60 * 1000,
+  LOG_RETENTION_DAYS: 30,
+  TABLES: ['users', 'logs', 'ongoing_attacks', 'blacklist', 'discord_links', 'methods', 'plans']
 };
 
 // ==================== LOOKUP SERVICES ====================
 export const LOOKUP_SERVICES = {
   IP_LOOKUP_URLS: [
-    'http://ip-api.com/json/{target}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query'
+    APP_DEFAULTS.IP_LOOKUP_FALLBACK_URL
   ],
   MINECRAFT_LOOKUP_URLS: [
     'https://api.mcsrvstat.us/2/{target}',
     'https://api.mcstatus.io/v2/status/java/{target}'
   ],
   FIVEM_LOOKUP_URLS: [
-    'https://servers-frontend.fivem.net/api/servers/single/{target}'
+    APP_DEFAULTS.FIVEM_LOOKUP_FALLBACK_URL
   ]
 };
 
@@ -187,6 +262,8 @@ export const STATUS_ROTATIONS = [
 ];
 
 export default {
+  APP_DEFAULTS,
+  DEFAULT_ROOT_CREDENTIALS,
   DEFAULT_TIPS,
   DEFAULT_ADS,
   PASSWORD_CONFIG,

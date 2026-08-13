@@ -1,17 +1,56 @@
 // Main request router for API, admin, and lookup endpoints.
 import { jsonResponse, routeNotFound } from './response.js';
 import * as Vault from './vault-db.js';
+import { initializeAll, getInitializationStatus } from './initialize.js';
 import { apiHandler } from './api.js';
 import { adminHandler } from './admin.js';
 import { lookupHandler } from './lookup.js';
-import { DATABASE_CONFIG, HTTP_CODES } from './config.js';
+import { DATABASE_CONFIG, HTTP_CODES, CACHE_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS } from './config.js';
 import { generateRequestId, StructuredLogger } from './logger.js';
 import { validateRequestSize, sanitizeErrorMessage } from './validator.js';
+import { cleanupExpiredAuthAttempts, getCachedSystemSetting, cleanupCacheStores } from './helpers.js';
 
 const MAX_REQUEST_SIZE = 1048576; // 1MB limit
+const INIT_CHECK_INTERVAL = 60000; // 1 minute between init checks
 
 let dbInitialized = false;
+let lastInitCheck = 0;
 let lastCleanupTime = 0;
+let lastCacheCleanupTime = 0;
+let cleanupQueue = [];
+let isCleanupRunning = false;
+
+/**
+ * Background cleanup queue handler
+ * Runs cleanup tasks asynchronously without blocking requests
+ */
+async function processCleanupQueue() {
+  if (isCleanupRunning || cleanupQueue.length === 0) return;
+  isCleanupRunning = true;
+  
+  try {
+    while (cleanupQueue.length > 0) {
+      const task = cleanupQueue.shift();
+      try {
+        await task();
+      } catch (e) {
+        console.error('Cleanup task failed:', e.message);
+      }
+    }
+  } finally {
+    isCleanupRunning = false;
+  }
+}
+
+/**
+ * Queue a cleanup task to run in background
+ * @param {Function} task - Async cleanup function
+ */
+function queueCleanupTask(task) {
+  cleanupQueue.push(task);
+  // Don't await - let it run in background
+  processCleanupQueue().catch(e => console.error('Cleanup queue error:', e));
+}
 
 export async function handleRequest(request, env) {
   // Generate unique request ID for tracking
@@ -46,10 +85,22 @@ export async function handleRequest(request, env) {
     }
 
     const parts = path.split('/');
+    const query = new URL(request.url).searchParams;
+    const username = String(query.get('username') || '').trim();
+    const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
 
-    const maintenanceEnabled = await Vault.getMaintenanceMode(env);
-    if (maintenanceEnabled && parts[0] !== 'admin') {
-      const serviceName = env.API_NAME || 'CAPI';
+    // Load maintenance mode once per request with caching
+    const maintenanceEnabled = await getCachedSystemSetting(
+      'maintenance_mode',
+      async (key) => {
+        const result = await Vault.getMaintenanceMode(env);
+        return result ? 'true' : 'false';
+      }
+    );
+    const isMaintenance = maintenanceEnabled === 'true';
+
+    if (isMaintenance && parts[0] !== 'admin') {
+      const serviceName = env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME;
       logger.info('maintenance_mode_active', { endpoint: parts[0] });
       return jsonResponse({
         error: true,
@@ -64,13 +115,13 @@ export async function handleRequest(request, env) {
     }
 
     if (path === '' || path === 'health') {
-      const serviceName = env.API_NAME || 'CAPI';
+      const serviceName = env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME;
       logger.metric('health_check', 1);
       return jsonResponse({
         name: serviceName,
         version: env.API_VERSION || '1.0.0',
-        status: maintenanceEnabled ? 'maintenance' : 'ok',
-        uptime: maintenanceEnabled ? 'maintenance' : 'online',
+        status: isMaintenance ? 'maintenance' : 'ok',
+        uptime: isMaintenance ? 'maintenance' : 'online',
         timestamp: new Date().toISOString(),
         service: serviceName,
         description: 'CAPI / CapySploit control plane with attack routing, admin controls, and lookup helpers.',
@@ -80,57 +131,58 @@ export async function handleRequest(request, env) {
           lookup: '/lookup/<type>'
         },
         available_actions: ['view_plan', 'attack', 'view_ongoing', 'my_attacks', 'network_statistics', 'list_methods', 'syntax_check']
-      }, maintenanceEnabled ? 503 : 200, { service: serviceName, requestId });
+      }, isMaintenance ? 503 : 200, { service: serviceName, requestId });
     }
 
     // Initialize database and seed defaults on first request
     if (!dbInitialized) {
-      await Vault.initializeDatabase(env);
+      await initializeAll(env);
       dbInitialized = true;
       logger.info('database_initialized');
     }
 
-    // Periodically cleanup old logs to prevent unbounded database growth
+    // Queue processing disabled by user request; direct execution is preferred.
+
+    // Periodically cleanup cache stores
     const now = Date.now();
-    if (now - lastCleanupTime > DATABASE_CONFIG.CLEANUP_INTERVAL_MS) {
-      lastCleanupTime = now;
-      // Run cleanup in background (don't await to not block response)
-      Vault.cleanupOldLogs(env, 30).catch(e => logger.error('cleanup_failed', e));
+    if (now - lastCacheCleanupTime > CACHE_CONFIG.CLEANUP_INTERVAL_MS) {
+      lastCacheCleanupTime = now;
+      cleanupCacheStores();
     }
 
-    const query = new URL(request.url).searchParams;
-    const username = String(query.get('username') || '').trim();
-    const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
-    const rateLimitTarget = username ? `route:${username}` : `route:${sourceIp}`;
-    const bypassEnabled = username ? Boolean((await Vault.getUser(env, username))?.bypass_anti_spam) : false;
+    // Create request context to avoid repeated DB lookups
+    const requestContext = {
+      requestId,
+      username,
+      sourceIp,
+      user: null,
+      userBypassEnabled: false,
+      rateLimitTarget: username ? `route:${username}` : `route:${sourceIp}`
+    };
 
-    if (!bypassEnabled) {
-      const { applyGlobalRateLimit } = await import('./helpers.js');
-      const rateLimit = await applyGlobalRateLimit(rateLimitTarget, false, 1);
-      if (!rateLimit.allowed) {
-        logger.security('rate_limit_exceeded', 'WARNING', { target: rateLimitTarget, ip: sourceIp });
-        return jsonResponse({
-          error: true,
-          message: 'Too many requests. Please wait 1 second and try again.',
-          status: 'rate_limited',
-          retry_after: rateLimit.secondsUntilAvailable,
-          hint: 'Rapid requests are blocked to protect the service and queue state.'
-        }, 429, { service: env.API_NAME || 'CAPI', requestId });
+    // Load user info once per request if username provided
+    if (username) {
+      try {
+        requestContext.user = await Vault.getUser(env, username);
+        requestContext.userBypassEnabled = Boolean(requestContext.user?.bypass_anti_spam);
+      } catch (e) {
+        logger.error('user_lookup_error', e);
+        // Continue without user context
       }
     }
 
-    // Route requests to appropriate handler with requestId
+    // Route requests to appropriate handler with context
     if (parts[0] === 'api') {
       logger.info('route_api', { endpoint: parts[1] });
-      return apiHandler(parts.slice(1), request, env, requestId, logger);
+      return apiHandler(parts.slice(1), request, env, requestId, logger, requestContext);
     }
     if (parts[0] === 'admin') {
       logger.auth('admin_access_attempt', username, true);
-      return adminHandler(parts.slice(1), request, env, requestId, logger);
+      return adminHandler(parts.slice(1), request, env, requestId, logger, requestContext);
     }
     if (parts[0] === 'lookup') {
       logger.info('route_lookup', { type: parts[1] });
-      return lookupHandler(parts.slice(1), request, env, requestId, logger);
+      return lookupHandler(parts.slice(1), request, env, requestId, logger, requestContext);
     }
     if (parts[0] === 'discord' || parts[0] === 'interactions') {
       const { handleDiscordInteraction, registerDiscordCommand } = await import('./discord-interactions.js');

@@ -92,17 +92,161 @@ export function validateMethod(method) {
 
 /**
  * Validate payload length
- * @param {number|string} length - Payload length to validate
- * @returns {Object} {valid: boolean, error: string, length: number}
+ * Fast version that returns just the number (used in api.js hot path)
+ * @param {number|string} length - Payload length value
+ * @returns {number} Validated length clamped to valid range
  */
 export function validatePayloadLength(length) {
   const num = parseInt(length, 10);
-  if (isNaN(num)) return { valid: false, error: 'Payload length must be a number', length: null };
-  if (num < 1) return { valid: false, error: 'Payload length must be at least 1 byte', length: null };
-  if (num > VALIDATION.MAX_PAYLOAD_LENGTH) {
-    return { valid: false, error: `Payload length must be at most ${VALIDATION.MAX_PAYLOAD_LENGTH} bytes`, length: null };
-  }
-  return { valid: true, error: null, length: num };
+  if (Number.isNaN(num) || num < 1) return 72; // Default
+  if (num > 65535) return 65535; // Max reasonable payload
+  return num;
+}
+
+/**
+ * Check if value is a valid IPv4 address
+ * @param {string} value - IP address to validate
+ * @returns {boolean} True if valid IPv4
+ */
+export function isIPv4(value) {
+  return typeof value === 'string' && /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/.test(value);
+}
+
+/**
+ * Check if IP is in private/reserved ranges
+ * @param {string} ip - IP address to check
+ * @returns {boolean} True if private/reserved
+ */
+export function isPrivateIPRange(ip) {
+  const privateRanges = [
+    /^127\./, // Loopback
+    /^10\./, // Private class A
+    /^172\.(1[6-9]|2\d|3[01])\./, // Private class B
+    /^192\.168\./, // Private class C
+    /^169\.254\./, // Link-local
+    /^224\./, // Multicast
+    /^255\./, // Broadcast
+    /^0\./ // Current network
+  ];
+  return privateRanges.some(range => range.test(ip));
+}
+
+/**
+ * Check if domain is reserved/internal
+ * @param {string} domain - Domain to check
+ * @returns {boolean} True if reserved
+ */
+export function isReservedDomain(domain) {
+  const normalizedDomain = domain.toLowerCase().trim();
+  const reservedDomains = [
+    'localhost',
+    '.localhost',
+    '.local',
+    '.test',
+    '.invalid',
+    '.example',
+    '.internal',
+    '0.0.0.0',
+    '255.255.255.255'
+  ];
+  return reservedDomains.some(reserved => 
+    normalizedDomain === reserved || 
+    normalizedDomain.endsWith(reserved)
+  );
+}
+
+/**
+ * Check if target looks like a URL/domain
+ * @param {string} value - Target to check
+ * @returns {boolean} True if looks like URL
+ */
+export function isUrlTarget(value) {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  if (isIPv4(value)) return false;
+  if (value.includes(' ')) return false;
+  return value.includes('.') || /^https?:\/\//i.test(value);
+}
+
+/**
+ * Validate target is safe to attack
+ * @param {string} target - Target to validate
+ * @returns {boolean} True if valid and safe
+ */
+export function isValidTarget(target) {
+  if (!target || typeof target !== 'string') return false;
+  const trimmed = target.trim();
+  if (!trimmed || trimmed.length === 0) return false;
+  if (trimmed.length > 255) return false;
+  if (trimmed.includes(' ') || trimmed.includes('\n') || trimmed.includes('\r')) return false;
+  
+  const isIP = isIPv4(trimmed);
+  const isURL = isUrlTarget(trimmed);
+  if (!isIP && !isURL) return false;
+  
+  if (isIP && isPrivateIPRange(trimmed)) return false;
+  if (isURL && isReservedDomain(trimmed)) return false;
+  
+  return true;
+}
+
+/**
+ * Normalize value for blacklist comparison
+ * @param {any} value - Value to normalize
+ * @returns {string} Normalized lowercase string
+ */
+export function normalizeBlacklistValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+/**
+ * Check if target is in blacklist
+ * @param {string} target - Target to check
+ * @param {Array} blacklistEntries - Blacklist entries
+ * @returns {boolean} True if blacklisted
+ */
+export function isBlacklistedTarget(target, blacklistEntries) {
+  const normalizedTarget = normalizeBlacklistValue(target);
+  if (!normalizedTarget) return false;
+
+  return (blacklistEntries || []).some((entry) => {
+    const normalizedEntry = normalizeBlacklistValue(entry);
+    if (!normalizedEntry) return false;
+
+    const isIpPrefix = /^((\d{1,3}\.){1,3}\d{1,3})\.?$/.test(normalizedEntry);
+    if (isIpPrefix) {
+      const prefix = normalizedEntry.endsWith('.') ? normalizedEntry : `${normalizedEntry}.`;
+      return normalizedTarget === normalizedEntry || normalizedTarget.startsWith(prefix) || normalizedEntry.startsWith(normalizedTarget);
+    }
+
+    return normalizedTarget === normalizedEntry
+      || normalizedTarget.startsWith(normalizedEntry)
+      || normalizedTarget.includes(normalizedEntry)
+      || (normalizedEntry.startsWith('.') && normalizedTarget.endsWith(normalizedEntry))
+      || normalizedEntry.startsWith(normalizedTarget);
+  });
+}
+
+/**
+ * Check if IP is blacklisted by metadata (country, ASN, etc)
+ * @param {Object} ipinfo - IP info object from lookup
+ * @param {Object} payloadBlacklists - Blacklist configuration
+ * @returns {boolean} True if blacklisted
+ */
+export function isBlacklistedByMetadata(ipinfo, payloadBlacklists) {
+  const blacklists = payloadBlacklists || {};
+  const asnNumbers = (blacklists.ASN_NUMBER || []).map(normalizeBlacklistValue).filter(Boolean);
+  const asnNames = (blacklists.ASN_NAME || []).map(normalizeBlacklistValue).filter(Boolean);
+  const countries = (blacklists.Countries || []).map(normalizeBlacklistValue).filter(Boolean);
+
+  const asnValue = normalizeBlacklistValue(ipinfo?.as || ipinfo?.asn || '');
+  const orgValue = normalizeBlacklistValue(ipinfo?.org || ipinfo?.isp || '');
+  const countryValue = normalizeBlacklistValue(ipinfo?.country || ipinfo?.countryCode || '');
+
+  if (asnNumbers.length && asnValue && asnNumbers.includes(asnValue)) return true;
+  if (asnNames.length && orgValue && asnNames.includes(orgValue)) return true;
+  if (countries.length && countryValue && countries.includes(countryValue)) return true;
+
+  return false;
 }
 
 /**

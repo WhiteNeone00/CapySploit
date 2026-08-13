@@ -1,9 +1,10 @@
 // Admin route handlers for user, method, blacklist, and misc controls.
 import { jsonResponse, structuredResponse, parseQuery, routeNotFound, resolveServiceName, makePolishedError, checkJavaScriptSyntax } from './response.js';
 import * as Vault from './vault-db.js';
+import { initializeAll, getInitializationStatus } from './initialize.js';
 import { getPayloadMethods } from '../payload.js';
-import { sanitizeUserForResponse, sanitizeUsersForResponse, paginate, validatePaginationParams, buildMessage, buildMetadata, checkApiRateLimit, applyGlobalRateLimit } from './helpers.js';
-import { PASSWORD_CONFIG, ADMIN_PROTECTED_FIELDS, ADMIN_EDITABLE_FIELDS } from './config.js';
+import { sanitizeUserForResponse, sanitizeUsersForResponse, paginate, validatePaginationParams, checkApiRateLimit, applyGlobalRateLimit, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts } from './helpers.js';
+import { PASSWORD_CONFIG, ADMIN_PROTECTED_FIELDS, ADMIN_EDITABLE_FIELDS, APP_DEFAULTS, USER_LIMITS } from './config.js';
 
 // ==================== UTILITY FUNCTIONS ====================
 
@@ -79,20 +80,84 @@ async function requireAdminCredentials(q, env) {
     return { ok: false, response: makePolishedError('admin authentication required', 401, { hint: 'Provide username and password as query parameters for the admin route.' }) };
   }
 
-  const admin = await Vault.getUser(env, username);
-  if (!admin || admin.password !== password || !admin.admin) {
-    return { ok: false, response: makePolishedError('invalid admin credentials', 401, { hint: 'Use a valid administrator account and its matching password.' }) };
+  // Check if account is locked due to failed auth attempts
+  const authStatus = getFailedAuthAttempts(username);
+  if (authStatus.isLocked) {
+    return { 
+      ok: false, 
+      response: makePolishedError(
+        `Account temporarily locked after ${authStatus.limit} failed attempts. Wait ${authStatus.nextAttemptAvailable} seconds before trying again.`, 
+        429, 
+        { 
+          hint: `Your account is locked for security. Try again in ${authStatus.nextAttemptAvailable} seconds.`,
+          locked: true,
+          attempts: authStatus.attempts,
+          limit: authStatus.limit
+        }
+      ) 
+    };
   }
 
+  const admin = await Vault.getUser(env, username);
+  if (!admin || admin.password !== password || !admin.admin) {
+    // Track failed attempt
+    const newAttemptCount = trackFailedAuthAttempt(username);
+    const remainingAttempts = authStatus.limit - newAttemptCount;
+    
+    return { 
+      ok: false, 
+      response: makePolishedError(
+        `Invalid admin credentials (${newAttemptCount}/${authStatus.limit} attempts)`, 
+        401, 
+        { 
+          hint: remainingAttempts > 0 
+            ? `${remainingAttempts} attempt${remainingAttempts !== 1 ? 's' : ''} remaining before account lock.`
+            : 'Account is now locked. Wait 15 minutes before trying again.',
+          attempts: newAttemptCount,
+          limit: authStatus.limit
+        }
+      ) 
+    };
+  }
+
+  // Clear failed auth attempts on successful login
+  clearFailedAuthAttempts(username);
   return { ok: true, admin };
 }
 
-export async function adminHandler(parts, request, env) {
+export async function adminHandler(parts, request, env, requestId, logger, requestContext = {}) {
   const q = parseQuery(request);
   const endpoint = parts[0] || '';
   const adminUsername = String(q.username || '').trim();
 
-  // Validate admin credentials first
+  // Handle initialization endpoints (no auth required, called once at setup)
+  if (endpoint === 'init') {
+    // ENDPOINT: /admin/init - Initialize all systems (database, KV, R2)
+    // Usage: Called once after deployment or when systems need reset
+    // Returns: Initialization status for all bindings
+    const initResult = await initializeAll(env);
+    return jsonResponse({
+      error: false,
+      message: 'System initialization completed',
+      data: initResult,
+      status: 'success'
+    }, initResult.all_success ? 200 : 207);
+  }
+
+  if (endpoint === 'init/status') {
+    // ENDPOINT: /admin/init/status - Check initialization status without auth
+    // Usage: Called to verify system readiness
+    // Returns: Health check for database, KV, R2
+    const status = await getInitializationStatus(env);
+    return jsonResponse({
+      error: false,
+      message: 'System status check',
+      data: status,
+      status: status.ready ? 'ready' : 'initializing'
+    }, status.ready ? 200 : 503);
+  }
+
+  // All other admin endpoints require authentication
   const guard = await requireAdminCredentials(q, env);
   if (!guard.ok) return guard.response;
   
@@ -117,15 +182,8 @@ export async function adminHandler(parts, request, env) {
     //   - username, password: Admin credentials for authentication
     //   - username_to_add (required): New username to create
     //   - password_to_add (optional): Password for new user (auto-generated if not provided)
-    //   - allowed_methods, allowed_targets: Attack restrictions
-    //   - service_name: Service/plan identifier
     //   - suspended, bypass_slots: Account flags
     // Returns: User object with password if auto-generated
-    
-    const adminUser = q.username;
-    const adminPass = q.password;
-    const admin = adminUser ? await Vault.getUser(env, adminUser) : null;
-    if (admin && admin.password !== adminPass) return makePolishedError('invalid admin credentials', 401, { hint: 'Use the correct admin username and password.' });
     if (!q.username_to_add) return makePolishedError('missing username_to_add', 400, { hint: 'Provide username_to_add in the request.' });
     
     // Prevent duplicate users - check if username already exists
@@ -136,7 +194,7 @@ export async function adminHandler(parts, request, env) {
     let userPassword = q.password_to_add || null;
     let passwordGenerated = false;
     if (!userPassword) {
-      userPassword = generatePassword(12);
+      userPassword = generatePassword(PASSWORD_CONFIG.DEFAULT_LENGTH);
       passwordGenerated = true;
     } else {
       // Validate provided password
@@ -154,22 +212,24 @@ export async function adminHandler(parts, request, env) {
       reseller: 0,
       vip: 0,
       holder: 0,
-      api_access: 0,
-      max_time: 60,
-      min_time: 30,
-      cooldown: 45,
-      max_concurrents: 1,
-      max_daily_attacks: 100,
-      created_by: adminUser || 'root',
+      api_access: 1,
+      max_time: USER_LIMITS.DEFAULT_MAX_TIME,
+      cooldown: USER_LIMITS.DEFAULT_COOLDOWN,
+      max_concurrents: USER_LIMITS.DEFAULT_MAX_CONCURRENTS,
+      max_daily_attacks: USER_LIMITS.DEFAULT_MAX_DAILY_ATTACKS,
+      created_by: adminUsername || 'root',
       expiry_unix: 0,
-      allowed_methods: q.allowed_methods || null,
-      allowed_targets: q.allowed_targets || null,
       bypass_slots: Number(q.bypass_slots || 0),
-      suspended: Number(q.suspended || 0),
-      service_name: q.service_name || inheritedServiceName || null
+      suspended: Number(q.suspended || 0)
     };
     
     await Vault.saveUser(env, user);
+    
+    // Log audit trail for user creation
+    const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
+    await logAuditAction(env, adminUsername, 'add_user', user.username, { 
+      reason: `User created with password ${passwordGenerated ? '(auto-generated)' : '(provided)'}` 
+    }, sourceIp, 'success');
     
     const responseMsg = passwordGenerated 
       ? `User '${user.username}' created with auto-generated password (shown below). Save this password securely.`
@@ -182,7 +242,7 @@ export async function adminHandler(parts, request, env) {
       username: user.username,
       password: passwordGenerated ? userPassword : undefined,
       password_generated: passwordGenerated,
-      created_by: adminUser || 'root',
+      created_by: adminUsername || 'root',
       created_at: new Date().toISOString()
     });
   }
@@ -218,7 +278,7 @@ export async function adminHandler(parts, request, env) {
     const u = await Vault.getUser(env, q.user_to_reset);
     if (!u) return makePolishedError('user not found', 404, { hint: 'The user does not exist.' });
     
-    const newPassword = generatePassword(12);
+    const newPassword = generatePassword(PASSWORD_CONFIG.DEFAULT_LENGTH);
     u.password = newPassword;
     await Vault.saveUser(env, u);
     return jsonResponse({ 
@@ -234,9 +294,8 @@ export async function adminHandler(parts, request, env) {
   if (endpoint === 'edit_user') {
     // ENDPOINT: /admin/edit_user - Modify specific user account field
     // Auth: Requires valid admin credentials
-    // Editable Fields: max_time, min_time, cooldown, concurrents, max_concurrents,
-    //   max_daily_attacks, bypass_slots, service_name, allowed_methods, allowed_targets,
-    //   api_access, power_saving, suspended, vip, holder, reseller, discord_linked
+    // Editable Fields: max_time, cooldown, concurrents, max_concurrents,
+    //   max_daily_attacks, bypass_slots, api_access, power_saving, suspended, vip, holder, reseller, discord_linked
     // Format: ?user_to_edit=alice&field_to_edit=concurrents&new_value=10
     // Returns: Confirmation with field name and new value
     
@@ -276,7 +335,13 @@ export async function adminHandler(parts, request, env) {
   if (endpoint === 'delete_user') {
     if (!q.user_to_delete) return makePolishedError('missing user_to_delete', 400, { hint: 'Provide user_to_delete in the request.' });
     if (q.user_to_delete === 'root') return makePolishedError('cannot remove root user', 403, { hint: 'Use a different target than the root account.' });
+    
     await Vault.deleteUser(env, q.user_to_delete);
+    
+    // Log audit trail for user deletion
+    const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
+    await logAuditAction(env, adminUsername, 'delete_user', q.user_to_delete, { reason: 'User account deleted' }, sourceIp, 'success');
+    
     return jsonResponse({ error: false, message: `User '${q.user_to_delete}' has been deleted successfully.` });
   }
 
@@ -297,8 +362,7 @@ export async function adminHandler(parts, request, env) {
       return makePolishedError('user not found', 404, { hint: 'Verify the username before trying again.' });
     }
 
-    const warnings = await Vault.getUserWarnings(env, u.username);
-    const serviceName = await resolveServiceName(u, env, env.API_NAME || 'CAPI');
+    const serviceName = await resolveServiceName(u, env, env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME);
     const discordLink = await Vault.getVerifiedDiscordLinkByUsername(env, u.username);
     const lastAttackTime = await Vault.getLastAttackTime(env, u.username);
     const attacksToday = await Vault.countUserDailyAttacks(env, u.username);
@@ -325,6 +389,7 @@ export async function adminHandler(parts, request, env) {
       message: 'User plan retrieved successfully.',
       data: {
         username: u.username,
+        password: u.password || null,
         admin: Boolean(u.admin),
         vip: Boolean(u.vip),
         holder: Boolean(u.holder),
@@ -332,8 +397,7 @@ export async function adminHandler(parts, request, env) {
         owner: Boolean(u.owner || false),
         api: Boolean(u.api_access),
         max_time: Number(u.max_time || 60),
-        min_time: Number(u.min_time || 30),
-        cooldown: Number(u.cooldown || 45),
+        cooldown: Number(u.cooldown || 10),
         max_concurrents: Number(u.max_concurrents || 1),
         max_daily_attacks: Number(u.max_daily_attacks || 100),
         attacks_today: Number(attacksToday || 0),
@@ -348,7 +412,6 @@ export async function adminHandler(parts, request, env) {
         created_at: createdAt,
         expiry_date: expiryDate,
         service_name: serviceName,
-        warnings: Number(warnings.count || 0),
         plan_type: planType,
         rank: rank,
         discord_linked: discordLink ? discordLink.discord_user_id : null,
@@ -362,12 +425,8 @@ export async function adminHandler(parts, request, env) {
   }
 
   if (endpoint === 'unlink_discord') {
-    const adminUser = q.username;
-    const adminPass = q.password;
-    const admin = adminUser ? await Vault.getUser(env, adminUser) : null;
-    if (!admin || admin.password !== adminPass || !admin.admin) return makePolishedError('invalid admin credentials', 401, { hint: 'Use a valid admin account to unlink Discord verification.' });
     if (!q.user_to_unlink) return makePolishedError('missing user_to_unlink', 400, { hint: 'Provide user_to_unlink in the request.' });
-    const result = await Vault.unlinkDiscordLinkByUsername(env, q.user_to_unlink, adminUser);
+    const result = await Vault.unlinkDiscordLinkByUsername(env, q.user_to_unlink, adminUsername);
     if (!result) return makePolishedError('Discord link not found', 404, { hint: 'This user does not have an active Discord verification to unlink.' });
     return jsonResponse({ error: false, message: `Discord account has been unlinked from user '${q.user_to_unlink}'.`, user: q.user_to_unlink, discord_user_id: result.discord_user_id, discord_username: result.discord_username, unlinked_at: result.unlinked_at });
   }
@@ -434,40 +493,7 @@ export async function adminHandler(parts, request, env) {
     return structuredResponse({ error: false, message: 'Code syntax is valid and error-free.', data: { valid: true, file: q.file_name || q.file || 'inline.js' } });
   }
 
-  if (endpoint === 'add_api') {
-    const adminUser = q.username;
-    const adminPass = q.password;
-    const admin = adminUser ? await Vault.getUser(env, adminUser) : null;
-    if (admin && admin.password !== adminPass) return jsonResponse({ error: true, message: 'invalid admin credentials' }, 401);
-    if (!q.url) return makePolishedError('missing url', 400, { hint: 'Provide the target URL for the new API endpoint.' });
-    await Vault.addAPI(env, { name: q.name || 'api', url: q.url, method: q.method || 'GET', active: q.active ? 1 : 1 });
-    return jsonResponse({ error: false, message: `API endpoint '${q.name || 'api'}' has been registered.` });
-  }
-
-  if (endpoint === 'list_apis') {
-    const adminUser = q.username;
-    const adminPass = q.password;
-    const admin = adminUser ? await Vault.getUser(env, adminUser) : null;
-    if (admin && admin.password !== adminPass) return jsonResponse({ error: true, message: 'invalid admin credentials' }, 401);
-    const apis = await Vault.listAPIs(env);
-    return jsonResponse({ error: false, message: `API endpoints retrieved (${(apis || []).length} endpoints registered).`, apis });
-  }
-
-  if (endpoint === 'delete_api') {
-    const adminUser = q.username;
-    const adminPass = q.password;
-    const admin = adminUser ? await Vault.getUser(env, adminUser) : null;
-    if (admin && admin.password !== adminPass) return jsonResponse({ error: true, message: 'invalid admin credentials' }, 401);
-    if (!q.id) return makePolishedError('missing id', 400, { hint: 'Provide the numeric id of the API endpoint to remove.' });
-    await Vault.deleteAPI(env, q.id);
-    return jsonResponse({ error: false, message: 'API endpoint has been deleted successfully.' });
-  }
-
   if (endpoint === 'add_method') {
-    const adminUser = q.username;
-    const adminPass = q.password;
-    const admin = adminUser ? await Vault.getUser(env, adminUser) : null;
-    if (admin && admin.password !== adminPass) return jsonResponse({ error: true, message: 'invalid admin credentials' }, 401);
     if (!q.name) return makePolishedError('missing name', 400, { hint: 'Provide a method name for the new method.' });
     await Vault.addMethod(env, { name: q.name, description: q.description || `${q.name} method` });
     return jsonResponse({ error: false, message: `Attack method '${q.name}' has been registered successfully.` });
@@ -490,7 +516,6 @@ export async function adminHandler(parts, request, env) {
         enabled: Boolean(meta?.enabled ?? true),
         target_type: meta?.target_type || null,
         default_port: meta?.default_port || null,
-        min_time: meta?.min_time || null,
         max_time: meta?.max_time || null,
         max_concurrents: meta?.max_concurrents || null,
         max_slots: meta?.max_slots || null,
@@ -515,10 +540,6 @@ export async function adminHandler(parts, request, env) {
   }
 
   if (endpoint === 'add_blacklist') {
-    const adminUser = q.username;
-    const adminPass = q.password;
-    const admin = adminUser ? await Vault.getUser(env, adminUser) : null;
-    if (admin && admin.password !== adminPass) return jsonResponse({ error: true, message: 'invalid admin credentials' }, 401);
     if (!q.target) return makePolishedError('missing target', 400, { hint: 'Provide the target to blacklist.' });
     await Vault.addBlacklistTarget(env, q.target, q.reason || 'manual');
     return jsonResponse({ error: false, message: `Target '${q.target}' has been added to the blacklist.` });
@@ -545,36 +566,27 @@ export async function adminHandler(parts, request, env) {
   }
 
   if (endpoint === 'remove_blacklist') {
-    const adminUser = q.username;
-    const adminPass = q.password;
-    const admin = adminUser ? await Vault.getUser(env, adminUser) : null;
-    if (admin && admin.password !== adminPass) return jsonResponse({ error: true, message: 'invalid admin credentials' }, 401);
     if (!q.target && !q.id) return makePolishedError('missing target or id', 400, { hint: 'Provide either the blacklist target or its id.' });
     await Vault.removeBlacklistTarget(env, q.target || q.id);
     return jsonResponse({ error: false, message: 'Blacklist entry has been removed.' });
   }
 
   if (endpoint === 'suspend_user') {
-    const adminUser = q.username;
-    const adminPass = q.password;
-    const admin = adminUser ? await Vault.getUser(env, adminUser) : null;
-    if (admin && admin.password !== adminPass) return jsonResponse({ error: true, message: 'invalid admin credentials' }, 401);
     if (!q.user_to_suspend) return makePolishedError('missing user_to_suspend', 400, { hint: 'Provide the target username to suspend.' });
     const reason = q.reason || 'Suspended by admin action.';
-    const actor = adminUser || 'admin';
+    const actor = adminUsername || 'admin';
     await Vault.setUserSuspension(env, q.user_to_suspend, true, reason, actor);
+    
+    const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
+    await logAuditAction(env, adminUsername, 'suspend_user', q.user_to_suspend, { reason }, sourceIp, 'success');
+    
     return jsonResponse({ error: false, message: `User '${q.user_to_suspend}' has been suspended.`, user: q.user_to_suspend, suspended_by: actor, suspend_reason: reason });
   }
 
   if (endpoint === 'unsuspend_user') {
-    const adminUser = q.username;
-    const adminPass = q.password;
-    const admin = adminUser ? await Vault.getUser(env, adminUser) : null;
-    if (admin && admin.password !== adminPass) return jsonResponse({ error: true, message: 'invalid admin credentials' }, 401);
     if (!q.user_to_unsuspend) return makePolishedError('missing user_to_unsuspend', 400, { hint: 'Provide the target username to unsuspend.' });
-    await Vault.clearUserWarnings(env, q.user_to_unsuspend);
     await Vault.setUserSuspension(env, q.user_to_unsuspend, false, null, null);
-    return jsonResponse({ error: false, message: `User '${q.user_to_unsuspend}' has been unsuspended and all warnings cleared.`, user: q.user_to_unsuspend });
+    return jsonResponse({ error: false, message: `User '${q.user_to_unsuspend}' has been unsuspended.`, user: q.user_to_unsuspend });
   }
 
   if (endpoint === 'stats') {
@@ -604,10 +616,6 @@ export async function adminHandler(parts, request, env) {
         timestamp: new Date().toISOString()
       }
     });
-  }
-
-  if (endpoint === 'key_info') {
-    return structuredResponse({ error: false, message: 'license info loaded', data: { created_by: 'root', days_remaining: '973.69', dev_infos: 'capi.dev', dlc_status: 'true', ip_address: 'IP ADDRESS', license_key: 'License Key', product_name: 'CAPI / CapySploit', royal_src_version: '1.8.7.2' } });
   }
 
   // Maintenance mode toggle endpoint
@@ -711,75 +719,6 @@ export async function adminHandler(parts, request, env) {
         attacks_disabled: currentStatus,
         status: currentStatus ? '🔴 All attacks are currently disabled' : '🟢 Attacks are enabled'
       });
-    }
-  }
-
-  // Add warning to user
-  if (endpoint === 'warn_user' || endpoint === 'add_warn') {
-    // ENDPOINT: /admin/warn_user - Add violation warning to user
-    // Auth: Requires valid admin credentials
-    // Parameters: user_to_warn (required), reason (optional)
-    // Returns: Updated user with new warn count
-    // Auto-suspend: If warn_count >= 5, user is suspended
-    
-    if (!q.user_to_warn) {
-      return makePolishedError('missing user_to_warn', 400, { hint: 'Provide user_to_warn parameter.' });
-    }
-    
-    const reason = q.reason || 'violation';
-    const updatedUser = await Vault.addUserWarning(env, q.user_to_warn, reason);
-    
-    if (!updatedUser) {
-      return makePolishedError('user not found', 404, { hint: 'The user does not exist.' });
-    }
-    
-    const message = updatedUser.warn_count >= 5 
-      ? `⚠️ User '${q.user_to_warn}' warned (${updatedUser.warn_count} total). AUTO-SUSPENDED due to repeated violations.`
-      : `⚠️ User '${q.user_to_warn}' warned (${updatedUser.warn_count} total).`;
-    
-    return jsonResponse({
-      error: false,
-      message: message,
-      user: q.user_to_warn,
-      warn_count: updatedUser.warn_count,
-      reason: reason,
-      suspended: updatedUser.suspended ? true : false,
-      warning_threshold: 5
-    });
-  }
-
-  // Edit rank properties (access levels)
-  if (endpoint === 'edit_rank') {
-    // ENDPOINT: /admin/edit_rank - Modify rank properties
-    // Auth: Requires valid admin credentials
-    // Parameters: rank_name (required), access_level (0=basic, 1=elevated)
-    // Returns: Updated rank details
-    
-    if (!q.rank_name) {
-      return makePolishedError('missing rank_name', 400, { hint: 'Provide rank_name parameter (Admin, Reseller, User).' });
-    }
-    
-    const accessLevel = q.access_level !== undefined ? Number(q.access_level) : null;
-    if (accessLevel !== null && (accessLevel < 0 || accessLevel > 1)) {
-      return makePolishedError('invalid access_level', 400, { hint: 'access_level must be 0 (basic) or 1 (elevated).' });
-    }
-    
-    try {
-      if (accessLevel !== null) {
-        await Vault.updateRank(env, q.rank_name, { access_level: accessLevel });
-      }
-      const rank = await Vault.getRank(env, q.rank_name);
-      if (!rank) {
-        return makePolishedError('rank not found', 404, { hint: 'The rank does not exist.' });
-      }
-      
-      return jsonResponse({
-        error: false,
-        message: `Rank '${q.rank_name}' updated successfully.`,
-        rank: rank
-      });
-    } catch (e) {
-      return makePolishedError(`Failed to update rank: ${e.message}`, 500);
     }
   }
 

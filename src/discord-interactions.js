@@ -1,6 +1,7 @@
 import { jsonResponse } from './response.js';
 import * as Vault from './vault-db.js';
 import { buildDiscordRoleNames } from './discord.js';
+import { APP_DEFAULTS } from './config.js';
 
 function hexToUint8Array(hex) {
   const clean = String(hex).trim();
@@ -42,7 +43,7 @@ async function verifyDiscordRequest(body, signature, timestamp, publicKey) {
 }
 
 async function fetchGuildRoles(guildId, botToken) {
-  const res = await fetch(`https://discord.com/api/v10/guilds/${guildId}/roles`, {
+  const res = await fetch(`${APP_DEFAULTS.DISCORD_API_BASE_URL}/guilds/${guildId}/roles`, {
     method: 'GET',
     headers: {
       Authorization: `Bot ${botToken}`,
@@ -57,7 +58,7 @@ async function fetchGuildRoles(guildId, botToken) {
 }
 
 async function assignRoleToMember(guildId, memberId, roleId, botToken) {
-  const res = await fetch(`https://discord.com/api/v10/guilds/${guildId}/members/${memberId}/roles/${roleId}`, {
+  const res = await fetch(`${APP_DEFAULTS.DISCORD_API_BASE_URL}/guilds/${guildId}/members/${memberId}/roles/${roleId}`, {
     method: 'PUT',
     headers: {
       Authorization: `Bot ${botToken}`
@@ -92,7 +93,7 @@ export async function registerDiscordCommand(request, env) {
     return jsonResponse({ error: true, message: 'Discord registration is not configured. Set DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID, and DISCORD_GUILD_ID.' }, 500);
   }
 
-  const url = `https://discord.com/api/v10/applications/${clientId}/guilds/${guildId}/commands`;
+  const url = `${APP_DEFAULTS.DISCORD_API_BASE_URL}/applications/${clientId}/guilds/${guildId}/commands`;
   const body = JSON.stringify({
     name: 'link',
     type: 1,

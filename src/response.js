@@ -1,36 +1,39 @@
 // Shared response helpers used by the API, admin, and lookup routes.
 import * as Vault from './vault-db.js';
-import { DEFAULT_TIPS, DEFAULT_ADS } from './config.js';
+import { DEFAULT_TIPS, DEFAULT_ADS, APP_DEFAULTS } from './config.js';
 
-let tipCursor = 0;
-let adCursor = 0;
+// Initialize cursor with random offset to avoid all workers using same index
+let tipCursor = Math.floor(Math.random() * 1000);
+let adCursor = Math.floor(Math.random() * 1000);
 
-function getRotatingText(list, cursor) {
-  const index = cursor % list.length;
-  return list[index];
+/**
+ * Get rotating text from list (thread-safe via atomic increment)
+ * Uses modulo to stay within bounds
+ * @param {Array} list - List to rotate through
+ * @param {number} cursorValue - Current cursor position
+ * @returns {string} Selected item from list
+ */
+function getRotatingText(list, cursorValue) {
+  if (!list || list.length === 0) return '';
+  const index = Math.floor(cursorValue) % list.length;
+  return list[index] || '';
 }
 
 function buildResponseMeta(payload = {}, options = {}) {
-  const tip = payload?.tips || payload?.tip || options?.tips || getRotatingText(DEFAULT_TIPS, tipCursor);
-  const ad = payload?.ads || payload?.advert || options?.ads || getRotatingText(DEFAULT_ADS, adCursor);
-  tipCursor = (tipCursor + 1) % DEFAULT_TIPS.length;
-  adCursor = (adCursor + 1) % DEFAULT_ADS.length;
+  // Use atomic increments and clamp to valid range to prevent race conditions
+  const tipIndex = tipCursor++;
+  const adIndex = adCursor++;
+  
+  const tip = payload?.tips || payload?.tip || options?.tips || getRotatingText(DEFAULT_TIPS, tipIndex);
+  const ad = payload?.ads || payload?.advert || options?.ads || getRotatingText(DEFAULT_ADS, adIndex);
+  
   return {
     tips: tip,
     ads: ad
   };
 }
 
-export async function resolveServiceName(user, env, fallback = 'CAPI') {
-  const direct = user?.service_name || user?.service || user?.brand_name || user?.serviceName || null;
-  if (typeof direct === 'string' && direct.trim()) return direct.trim();
-
-  if (user?.created_by && env) {
-    const parent = await Vault.getUser(env, user.created_by);
-    const parentName = parent?.service_name || parent?.service || parent?.brand_name || null;
-    if (typeof parentName === 'string' && parentName.trim()) return parentName.trim();
-  }
-
+export async function resolveServiceName(user, env, fallback = APP_DEFAULTS.DEFAULT_SERVICE_NAME) {
   return fallback;
 }
 
@@ -196,7 +199,7 @@ export function jsonResponse(payload, status = 200, options = {}) {
   const baseEntries = Object.entries(payloadWithoutFooter).filter(([key]) => !['tips', 'ads', 'timestamp', 'service', 'version'].includes(key));
   const responsePayload = Object.fromEntries(baseEntries);
   responsePayload.timestamp = payloadWithoutFooter.timestamp || new Date().toISOString();
-  responsePayload.service = options.service || payloadWithoutFooter.service || payloadWithoutFooter.service_name || 'CAPI';
+  responsePayload.service = options.service || payloadWithoutFooter.service || payloadWithoutFooter.service_name || APP_DEFAULTS.DEFAULT_SERVICE_NAME;
   responsePayload.version = payloadWithoutFooter.version || '1.0.0';
   responsePayload.tips = payloadWithoutFooter.tips || options.tips || meta.tips;
   responsePayload.ads = payloadWithoutFooter.ads || options.ads || meta.ads;

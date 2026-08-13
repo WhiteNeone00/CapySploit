@@ -78,7 +78,6 @@ If you still want gateway behavior or live presence, use `CAPI/src/discord-bot.j
 - GET /admin/view_user_plan
 - GET /admin/view_all_logs
 - GET /admin/view_all_users
-- GET /admin/key_info
 - GET /lookup/lookup_fivem
 - GET /lookup/lookup_mc
 

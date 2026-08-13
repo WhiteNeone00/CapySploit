@@ -4,14 +4,14 @@ import { Client, GatewayIntentBits, ActivityType, Partials, REST, Routes, SlashC
 import * as Vault from './vault-db.js';
 import { buildDiscordRoleNames, userPlanRole } from './discord.js';
 import { formatSlotBar } from './helpers.js';
-import { DISCORD_DEFAULTS, API_CONFIG } from './config.js';
+import { DISCORD_DEFAULTS, API_CONFIG, APP_DEFAULTS } from './config.js';
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
 const guildId = process.env.DISCORD_GUILD_ID;
-const apiBaseUrl = process.env.API_BASE_URL || 'https://capi.insideproxy.me';
-const apiSecondary = process.env.API_BASE_URL_SECONDARY || 'https://capi.capysploit.workers.dev';
-const ATTACK_CARD_IMAGE_URL = process.env.ATTACK_CARD_IMAGE_URL || 'https://discord-webhook.com/uploads/5ab0b46dde847b81e431d78bf9c9757d.webp';
+const apiBaseUrl = process.env.API_BASE_URL || APP_DEFAULTS.API_BASE_URL_FALLBACK;
+const apiSecondary = process.env.API_BASE_URL_SECONDARY || APP_DEFAULTS.API_BASE_URL;
+const ATTACK_CARD_IMAGE_URL = process.env.ATTACK_CARD_IMAGE_URL || APP_DEFAULTS.ATTACK_CARD_IMAGE_URL;
 const BOTTOM_BANNER_IMAGE_URL = process.env.BOTTOM_BANNER_IMAGE_URL || ATTACK_CARD_IMAGE_URL;
 const API_CANDIDATES = [apiBaseUrl, apiSecondary].filter(Boolean);
 
@@ -448,15 +448,15 @@ function buildLookupContainer(type, hostname, payload, path) {
           iconUrl = `attachment://${name}`;
         }
       } else {
-        iconUrl = 'https://static.wikia.nocookie.net/minecraft_gamepedia/images/6/6b/Minecraft.png';
+        iconUrl = APP_DEFAULTS.MINECRAFT_ICON_URL;
       }
     } else if (type === 'cfx') {
       if (fav && String(fav).startsWith('http')) iconUrl = fav;
-      else iconUrl = server.icon || payload.icon || 'https://wiki.fivem.net/images/f/f8/FiveM_icon.png';
+      else iconUrl = server.icon || payload.icon || APP_DEFAULTS.FIVEM_ICON_URL;
     } else if (type === 'domain') {
-      iconUrl = 'https://www.gstatic.com/images/branding/product/1x/domains_48dp.png';
+      iconUrl = APP_DEFAULTS.GOOGLE_DOMAIN_ICON_URL;
     } else if (type === 'ip' && countryCode) {
-      iconUrl = `https://flagcdn.com/w80/${countryCode.toLowerCase()}.png`;
+      iconUrl = APP_DEFAULTS.FLAG_ICON_URL_TEMPLATE.replace('{code}', countryCode.toLowerCase());
     }
   } catch (e) {
     iconUrl = null;
@@ -544,7 +544,7 @@ function buildLookupContainer(type, hostname, payload, path) {
   linksRow.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('Open (Primary API)').setURL(primary));
   if (secondary) linksRow.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('Open (Secondary)').setURL(secondary));
   // WHOIS / Details link for domains
-  if (type === 'domain') linksRow.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('WHOIS').setURL(`https://whois.domaintools.com/${encodeURIComponent(hostname)}`));
+  if (type === 'domain') linksRow.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('WHOIS').setURL(`${APP_DEFAULTS.WHOIS_BASE_URL}/${encodeURIComponent(hostname)}`));
 
   // Add a compact 'At a glance' text display for quick metadata
   const glanceParts = [];
@@ -611,8 +611,7 @@ const adminCommand = new SlashCommandBuilder()
       .setName('create')
       .setDescription('Create a new user')
       .addStringOption(option => option.setName('username').setDescription('Username').setRequired(true))
-      .addStringOption(option => option.setName('password').setDescription('Password').setRequired(true))
-      .addStringOption(option => option.setName('preset_option').setDescription('Preset option').setRequired(true)))
+      .addStringOption(option => option.setName('password').setDescription('Password').setRequired(true)))
     .addSubcommand(sub => sub
       .setName('delete')
       .setDescription('Delete an existing user')
@@ -1156,16 +1155,15 @@ client.on('interactionCreate', async (interaction) => {
       const action = interaction.options.getSubcommand();
       const username = interaction.options.getString('username') || interaction.options.getString('username_option');
       const password = interaction.options.getString('password');
-      const preset = interaction.options.getString('preset_option');
       const field = interaction.options.getString('field_option');
       const newValue = interaction.options.getString('newvalue_option');
 
       if (subGroup === 'user') {
         if (action === 'create') {
-          const res = await apiFetch(`/api/admin/user_create?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&preset_option=${encodeURIComponent(preset)}`);
+          const res = await apiFetch(`/api/admin/user_create?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`);
           const body = await res.json();
           if (body.error) return await interaction.editReply({ content: `Create failed: ${body.message || 'unknown'}` });
-          const container = buildAdminActionContainer('## 🛠️ Admin User Create', `Created user **${username}** successfully.`, [`Preset: ${preset}`]);
+          const container = buildAdminActionContainer('## 🛠️ Admin User Create', `Created user **${username}** successfully.`);
           await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral });
           return;
         }

