@@ -346,24 +346,27 @@ export async function apiHandler(parts, request, env) {
 
     return jsonResponse({
       error: false,
-      online_users_count: 1,
-      total_users_count: total,
-      active_users_count: activeUsers,
-      vip_users_count: vipUsers,
-      holder_users_count: holderUsers,
-      reseller_users_count: resellerUsers,
-      suspended_users_count: suspendedUsers,
-      expired_users_count: 0,
-      attacks_are_enabled: true,
-      total_ongoing_attacks: ongoing,
-      total_attacks_today: attacksToday,
-      total_warning_count: warningCount,
-      verified_discord_users_count: verifiedDiscordUsers,
-      max_attack_api_slots: GLOBAL_API_SLOTS,
-      health_status: healthStatus,
-      maintenance_mode: false,
-      src_name: 'CAPI',
-      src_uptime: 'up'
+      message: 'Network statistics retrieved successfully.',
+      data: {
+        online_users_count: 1,
+        total_users_count: total,
+        active_users_count: activeUsers,
+        vip_users_count: vipUsers,
+        holder_users_count: holderUsers,
+        reseller_users_count: resellerUsers,
+        suspended_users_count: suspendedUsers,
+        expired_users_count: 0,
+        attacks_are_enabled: true,
+        total_ongoing_attacks: ongoing,
+        total_attacks_today: attacksToday,
+        total_warning_count: warningCount,
+        verified_discord_users_count: verifiedDiscordUsers,
+        max_attack_api_slots: GLOBAL_API_SLOTS,
+        health_status: healthStatus,
+        maintenance_mode: false,
+        src_name: 'CAPI',
+        src_uptime: 'up'
+      }
     }, 200, { service: env.API_NAME || 'CAPI' });
   }
 
@@ -951,12 +954,6 @@ export async function apiHandler(parts, request, env) {
 
     const todays = await Vault.countUserDailyAttacks(env, record.username);
     if (user.max_daily_attacks && todays >= (user.max_daily_attacks || 0)) return makePolishedError('max daily attacks exceeded', 429, { hint: 'Wait until the daily quota resets or ask for a higher daily limit.' });
-
-    const last = await Vault.getLastAttackTime(env, record.username);
-    if (last) {
-      const diff = Date.now() - new Date(last).getTime();
-      if (diff < ((user.cooldown || 10) * 1000)) return makePolishedError('rate limit exceeded', 429, { hint: 'Too many requests. Wait before sending another attack.' });
-    }
 
     const userOngoing = await Vault.countUserOngoing(env, record.username);
     if ((userOngoing + record.concurrents) > limits.maxConcurrents) return makePolishedError(`requested concurrents would exceed user's allowed concurrents of ${limits.maxConcurrents} (current running: ${userOngoing})`, 400, { hint: 'Lower the concurrency value or wait for running attacks to finish.' });
