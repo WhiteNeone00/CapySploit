@@ -28,13 +28,13 @@ test('keeps the ad copy simple and premium-looking', async () => {
   assert.ok(!body.ads.startsWith('Sponsored:'));
 });
 
-test('adds a polished hint and route suggestions for error responses', async () => {
+test('adds a polished hint to error responses without clutter', async () => {
   const response = makePolishedError('missing input', 400);
   const body = await response.json();
 
   assert.equal(body.error, true);
   assert.equal(body.message, 'missing input');
   assert.equal(body.hint, 'Review your request and try again.');
-  assert.deepEqual(body.supported_routes, { api: '/api/<action>', admin: '/admin/<action>', lookup: '/lookup/<type>' });
-  assert.ok(body.examples.profile);
+  assert.equal(body.supported_routes, undefined, 'supported_routes should not be in response');
+  assert.equal(body.examples, undefined, 'examples should not be in response');
 });

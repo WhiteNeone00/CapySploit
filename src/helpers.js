@@ -40,7 +40,7 @@ export function formatSlotBar(used, total) {
   const filled = total > 0 ? Math.round(Math.min(total, used) * 10 / total) : 0;
   const empty = 10 - filled;
   const percent = total === 0 ? 0 : (used / total) * 100;
-  return `${'🔵'.repeat(filled)}${'⬜'.repeat(empty)} (${percent.toFixed(2)}%)`;
+  return `${'█'.repeat(filled)}${'░'.repeat(empty)} (${percent.toFixed(2)}%)`;
 }
 
 /**

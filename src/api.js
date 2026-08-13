@@ -31,8 +31,8 @@ function buildWarningSummary(user, warnings) {
     suspended,
     severity,
     warn_status: `${count}/${limit}`,
-    label: suspended ? '🚫 account suspended' : count >= limit ? `⚠️ ${count}/${limit} warnings` : `⚠️ ${count}/${limit} warnings`,
-    detail: suspended ? 'Account is suspended and must be cleared by an admin.' : `Warnings are tracked for abuse and policy enforcement.`
+    label: suspended ? 'account suspended' : count >= limit ? `${count}/${limit} warnings` : `${count}/${limit} warnings`,
+    detail: suspended ? 'Account is suspended and must be cleared by an admin.' : 'Warnings are tracked for abuse and policy enforcement.'
   };
 }
 
@@ -342,6 +342,8 @@ export async function apiHandler(parts, request, env) {
     const holderUsers = await Vault.countUsersByFlag(env, 'holder');
     const resellerUsers = await Vault.countUsersByFlag(env, 'reseller');
     const verifiedDiscordUsers = await Vault.countVerifiedDiscordLinks(env);
+    const maintenanceMode = await Vault.getMaintenanceMode(env);
+    const attacksDisabled = await Vault.getAttacksDisabled(env);
     const healthStatus = suspendedUsers > 0 || ongoing > 0 ? 'degraded' : 'stable';
 
     return jsonResponse({
@@ -356,14 +358,14 @@ export async function apiHandler(parts, request, env) {
         reseller_users_count: resellerUsers,
         suspended_users_count: suspendedUsers,
         expired_users_count: 0,
-        attacks_are_enabled: true,
+        attacks_are_enabled: !attacksDisabled,
         total_ongoing_attacks: ongoing,
         total_attacks_today: attacksToday,
         total_warning_count: warningCount,
         verified_discord_users_count: verifiedDiscordUsers,
         max_attack_api_slots: GLOBAL_API_SLOTS,
         health_status: healthStatus,
-        maintenance_mode: false,
+        maintenance_mode: maintenanceMode,
         src_name: 'CAPI',
         src_uptime: 'up'
       }
@@ -396,7 +398,7 @@ export async function apiHandler(parts, request, env) {
     const totalSlots = GLOBAL_API_SLOTS;
     const usedSlots = ongoing;
     const slotBar = formatSlotBar(usedSlots, totalSlots);
-    const maintenance = Boolean(String(env.MAINTENANCE_MODE || env.API_MAINTENANCE || '').toLowerCase() === 'true');
+    const maintenance = await Vault.getMaintenanceMode(env);
     const lastMaintenance = env.LAST_MAINTENANCE || env.LAST_MAINTENANCE_AT || null;
     const uptimeMs = Date.now() - SERVICE_START;
     const uptimeSeconds = Math.floor(uptimeMs / 1000);
@@ -513,7 +515,7 @@ export async function apiHandler(parts, request, env) {
           max_time: Number(user.max_time || 60),
           min_time: Number(user.min_time || 30),
           cooldown: Number(user.cooldown || 45),
-          concurrents: Number(user.concurrents || 1),
+          max_concurrents: Number(user.max_concurrents || 1),
           max_daily_attacks: Number(user.max_daily_attacks || 100),
           suspended: Boolean(user.suspended),
           suspend_reason: user.suspend_reason || null,
@@ -654,7 +656,7 @@ export async function apiHandler(parts, request, env) {
           max_time: Number(u.max_time || 60),
           min_time: Number(u.min_time || 30),
           cooldown: Number(u.cooldown || 45),
-          concurrents: Number(u.concurrents || 1),
+          max_concurrents: Number(u.max_concurrents || 1),
           max_daily_attacks: Number(u.max_daily_attacks || 100),
           suspended: Boolean(u.suspended),
           suspend_reason: u.suspend_reason || null,
@@ -719,7 +721,7 @@ export async function apiHandler(parts, request, env) {
         max_time: Number(u.max_time || 60),
         min_time: Number(u.min_time || 30),
         cooldown: Number(u.cooldown || 45),
-        concurrents: Number(u.concurrents || 1),
+        max_concurrents: Number(u.max_concurrents || 1),
         max_daily_attacks: Number(u.max_daily_attacks || 100),
         attacks_remaining: attacksRemaining,
         power_saving: Boolean(u.power_saving || 1),
@@ -958,47 +960,52 @@ export async function apiHandler(parts, request, env) {
     const userOngoing = await Vault.countUserOngoing(env, record.username);
     if ((userOngoing + record.concurrents) > limits.maxConcurrents) return makePolishedError(`requested concurrents would exceed user's allowed concurrents of ${limits.maxConcurrents} (current running: ${userOngoing})`, 400, { hint: 'Lower the concurrency value or wait for running attacks to finish.' });
 
+    const queuedByUser = await Vault.countUserQueued(env, record.username);
+    const remainingUserQueueSlots = Math.max(0, Number(limits.maxConcurrents || 1) - Number(userOngoing || 0));
+    if (remainingUserQueueSlots <= 0 || queuedByUser >= remainingUserQueueSlots) {
+      return makePolishedError('queue limit reached', 429, {
+        hint: `You already have ${queuedByUser} queued request(s) and only ${remainingUserQueueSlots} concurrency slot(s) available right now.`
+      });
+    }
+
     const methodMaxSlots = Number(methodMeta?.max_slots || 0);
-    // Check if method has reached its max slots and handle queuing
+    const ongoing = await Vault.countOngoing(env);
+    const userBypass = Boolean(user.bypass_slots || 0);
+
     if (methodMaxSlots > 0) {
       const methodOngoing = await Vault.countMethodOngoing(env, record.method);
       if (methodOngoing >= methodMaxSlots) {
-        // Queue the attack instead of rejecting
         const queuePosition = await Vault.queueAttack(env, record, 'method_slots_full');
         return jsonResponse({
           error: false,
           status: 202,
-          message: `✅ Attack queued! Your request is #${queuePosition} in the queue for ${record.method} method.`,
+          message: `Attack queued. Position #${queuePosition} for ${record.method}.`,
           data: {
             queued: true,
             queue_position: queuePosition,
-            queue_reason: 'Method at maximum concurrent attacks',
+            queue_reason: 'method_slots_full',
             target: record.target,
             method: record.method,
-            hint: `There are ${methodOngoing} active ${record.method} attacks. Your request will be executed as soon as a slot becomes available.`
+            hint: `The ${record.method} method is at capacity (${methodOngoing}/${methodMaxSlots}).`
           }
         }, 202);
       }
     }
 
-    // Check global API slots
-    const ongoing = await Vault.countOngoing(env);
-    const userBypass = Boolean(user.bypass_slots || 0);
     if (!userBypass && ongoing >= GLOBAL_API_SLOTS) {
-      // Queue the attack when global API slots are full (unless user has bypass)
       const queuePosition = await Vault.queueAttack(env, record, 'api_slots_full');
       return jsonResponse({
         error: false,
         status: 202,
-        message: `✅ Attack queued! Your request is #${queuePosition} in the queue due to high API load.`,
+        message: `Attack queued. Position #${queuePosition} due to API load.`,
         data: {
           queued: true,
           queue_position: queuePosition,
-          queue_reason: 'API at maximum global concurrent attacks',
+          queue_reason: 'api_slots_full',
           target: record.target,
           method: record.method,
           global_slots_status: `${ongoing}/${GLOBAL_API_SLOTS}`,
-          hint: `All ${GLOBAL_API_SLOTS} global API slots are in use. Your request will execute as soon as a slot becomes available.`
+          hint: `All ${GLOBAL_API_SLOTS} API slots are in use.`
         }
       }, 202);
     }
@@ -1042,7 +1049,7 @@ export async function apiHandler(parts, request, env) {
         username: user.username || qv.username || 'anon',
         max_time: Number(user.max_time || 60),
         min_time: Number(user.min_time || 30),
-        max_concurrents: Number(user.concurrents || 1),
+        max_concurrents: Number(user.max_concurrents || 1),
         method_max_slots: Number(methodMeta?.max_slots || 0),
         method_active_slots: Number(await Vault.countMethodOngoing(env, record.method)),
         cooldown: Number(user.cooldown || 10),

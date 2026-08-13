@@ -428,6 +428,13 @@ export async function getQueueLength(env) {
   return (res?.results?.[0]?.c) || 0;
 }
 
+export async function countUserQueued(env, username) {
+  const DB = getDB(env);
+  if (!DB || !username) return 0;
+  const res = await DB.prepare('SELECT COUNT(*) AS c FROM attack_queue WHERE username = ? AND status = ?').bind(username, 'pending').all();
+  return Number(res?.results?.[0]?.c || 0);
+}
+
 /**
  * Remove an attack from queue (when user can send it)
 /**
