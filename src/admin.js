@@ -240,15 +240,10 @@ export async function adminHandler(parts, request, env) {
     // Format: ?user_to_edit=alice&field_to_edit=concurrents&new_value=10
     // Returns: Confirmation with field name and new value
     
-    // Fields safe for editing (not password, admin status, etc.)
-    const ALLOWED_FIELDS = [
-      'max_time', 'min_time', 'cooldown', 'max_concurrents',
-      'max_daily_attacks', 'bypass_slots', 'service_name', 'allowed_methods',
-      'allowed_targets', 'api_access', 'power_saving', 'suspended', 'vip',
-      'holder', 'reseller', 'bypass_blacklist', 'expires_at'
-    ];
+    // Use config for allowed fields (prevents accidental privilege escalation)
+    const ALLOWED_FIELDS = ADMIN_EDITABLE_FIELDS;
     
-    if (!q.user_to_edit || !q.field_to_edit) return makePolishedError('missing parameters', 400, { hint: 'Provide user_to_edit and field_to_edit (e.g., ?user_to_edit=alice&field_to_edit=concurrents&new_value=10).' });
+    if (!q.user_to_edit || !q.field_to_edit) return makePolishedError('missing parameters', 400, { hint: 'Provide user_to_edit and field_to_edit (e.g., ?user_to_edit=alice&field_to_edit=max_concurrents&new_value=10).' });
     const u = await Vault.getUser(env, q.user_to_edit);
     if (!u) return makePolishedError('user not found', 404, { hint: 'The user does not exist. Verify the username and try again.' });
     
@@ -263,7 +258,14 @@ export async function adminHandler(parts, request, env) {
     }
     
     if (!fieldName || fieldValue === undefined) return makePolishedError('incomplete field update', 400, { hint: 'Provide both field name and value.' });
-    if (!ALLOWED_FIELDS.includes(fieldName)) return makePolishedError('field not editable', 400, { hint: `Editable fields: ${ALLOWED_FIELDS.join(', ')}. For password changes, use /admin/change_password.` });
+    
+    // CRITICAL: Verify field is in whitelist (prevents privilege escalation)
+    if (!ALLOWED_FIELDS.includes(fieldName)) {
+      if (ADMIN_PROTECTED_FIELDS.includes(fieldName)) {
+        return makePolishedError('field not editable for security', 403, { hint: `The field '${fieldName}' cannot be edited via this endpoint for security reasons.` });
+      }
+      return makePolishedError('field not editable', 400, { hint: `Editable fields: ${ALLOWED_FIELDS.join(', ')}. For password changes, use /admin/change_password.` });
+    }
     
     // Convert to appropriate type
     u[fieldName] = isNaN(Number(fieldValue)) ? fieldValue : Number(fieldValue);
