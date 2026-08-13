@@ -146,36 +146,6 @@ export function isValidPositiveInt(value, min = 0, max = Infinity) {
 }
 
 /**
- * Rate limit helper - check if action should be rate limited
- * Simple in-memory rate limiter (should use Redis for production)
- * @param {Map} store - Rate limit store (key: identifier, value: { count, resetAt })
- * @param {string} key - Rate limit key (e.g., username or IP)
- * @param {number} maxRequests - Max requests allowed
- * @param {number} windowMs - Time window in milliseconds
- * @returns {Object} { allowed: boolean, remaining: number, resetAt: timestamp }
- */
-export function checkRateLimit(store, key, maxRequests = 100, windowMs = 60000) {
-  const now = Date.now();
-  const record = store.get(key) || { count: 0, resetAt: now + windowMs };
-  
-  if (now >= record.resetAt) {
-    // Window expired, reset
-    record.count = 0;
-    record.resetAt = now + windowMs;
-  }
-  
-  const allowed = record.count < maxRequests;
-  record.count += 1;
-  store.set(key, record);
-  
-  return {
-    allowed,
-    remaining: Math.max(0, maxRequests - record.count),
-    resetAt: record.resetAt
-  };
-}
-
-/**
  * Check API rate limit (3-second minimum between requests)
  * Prevents rapid F5 spam and abuse
  * @param {string} identifier - User identifier (username or IP)

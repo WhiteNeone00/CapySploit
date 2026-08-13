@@ -48,7 +48,7 @@ export async function handleRequest(request, env) {
         admin: '/admin/<action>',
         lookup: '/lookup/<type>'
       },
-      available_actions: ['view_profile', 'view_plan', 'attack', 'view_ongoing', 'network_statistics', 'list_methods', 'syntax_check']
+      available_actions: ['view_plan', 'attack', 'view_ongoing', 'my_attacks', 'network_statistics', 'list_methods', 'syntax_check']
     }, maintenanceEnabled ? 503 : 200, { service: serviceName });
   }
 

@@ -83,7 +83,7 @@ function buildRecentContainer(username, list = []) {
     return `**${index + 1}.** ${target} • ${method} • ${duration}s`;
   });
   if (!lines.length) lines.push('No recent attacks found.');
-  const container = buildInfoContainer(`## 🕒 Recent Attacks for ${username}`, summary, lines, [new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('View Profile').setURL(`${apiBaseUrl}/api/view_profile?username=${encodeURIComponent(username)}`)]);
+  const container = buildInfoContainer(`## 🕒 Recent Attacks for ${username}`, summary, lines, [new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('View Plan').setURL(`${apiBaseUrl}/api/view_plan?username=${encodeURIComponent(username)}`)]);
   return container;
 }
 
@@ -737,7 +737,7 @@ async function postOrUpdateGraphStatusMessage() {
     console.error('Failed to update graph status message:', error);
   }
 }
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`Discord bot logged in as ${client.user.tag}`);
   await registerCommands();
   await updateStatus();
@@ -1026,7 +1026,7 @@ client.on('interactionCreate', async (interaction) => {
         new ButtonBuilder()
           .setStyle(ButtonStyle.Link)
           .setLabel('View API')
-          .setURL(`${apiBaseUrl}/api/view_profile?username=${encodeURIComponent(profile.username)}`),
+          .setURL(`${apiBaseUrl}/api/view_plan?username=${encodeURIComponent(profile.username)}`),
         new ButtonBuilder()
           .setStyle(ButtonStyle.Secondary)
           .setLabel('Refresh')

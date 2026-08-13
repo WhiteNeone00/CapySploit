@@ -236,7 +236,7 @@ export async function apiHandler(parts, request, env) {
   let requestUser = null;
 
   // Only protect sensitive endpoints. Public endpoints (network_statistics, endpoints/docs/help,
-  // methods, graph, discord_profile, link, unlink, view_ongoing, view_profile, view_plan) should be
+  // methods, graph, discord_profile, link, unlink, view_ongoing, my_attacks, view_plan) should be
   // accessible without username/password so bots and unauthenticated callers can receive 404 or public data.
   const PROTECTED_ENDPOINTS = new Set(['attack', 'stop', 'verify']);
   if (PROTECTED_ENDPOINTS.has(endpoint)) {
@@ -632,45 +632,6 @@ export async function apiHandler(parts, request, env) {
     return jsonResponse({ error: false, message: 'Discord account unlinked successfully.', discord_user_id: discordUserId, discord_username: unlinked.discord_username, username: unlinked.username, unlinked_at: unlinked.unlinked_at }, 200, { service: env.API_NAME || 'CAPI' });
   }
 
-  if (endpoint === 'view_profile') {
-    // Require username/password or bot auth
-    const qv = q;
-    const auth = await allowUserOrBotAuth(qv, request);
-    if (!auth.ok) return makePolishedError('missing credentials', 401, { hint: 'Provide username/password or use bot auth with discord_user_id.' });
-    const u = await Vault.getUser(env, auth.username);
-    if (!u) return makePolishedError('user not found', 404, { hint: `User '${auth.username}' does not exist.` });
-    const warnings = await Vault.getUserWarnings(env, u.username);
-    const serviceName = await resolveServiceName(u, env, env.API_NAME || 'CAPI');
-    const warningSummary = buildWarningSummary(u, warnings);
-    const discordLink = await Vault.getDiscordLinkByUsername(env, u.username);
-    return jsonResponse({
-      error: false,
-      message: 'profile loaded',
-      data: {
-        profile: {
-          username: u.username,
-          admin: Boolean(u.admin),
-          vip: Boolean(u.vip),
-          holder: Boolean(u.holder),
-          api_access: Boolean(u.api_access),
-          max_time: Number(u.max_time || 60),
-          min_time: Number(u.min_time || 30),
-          cooldown: Number(u.cooldown || 45),
-          max_concurrents: Number(u.max_concurrents || 1),
-          max_daily_attacks: Number(u.max_daily_attacks || 100),
-          suspended: Boolean(u.suspended),
-          suspend_reason: u.suspend_reason || null,
-          suspended_by: u.suspended_by || null,
-          service_name: serviceName,
-          resellers_service: Boolean(u.created_by && u.created_by !== u.username),
-          account_status: u.suspended ? 'suspended' : warningSummary.count >= 5 ? 'at_limit' : 'active',
-          warnings: Number(warningSummary.count || 0),
-          discord_linked: discordLink ? discordLink.discord_user_id : null
-        }
-      }
-    }, 200, { service: serviceName });
-  }
-
   if (endpoint === 'view_plan') {
     const qv = q;
     const auth = await allowUserOrBotAuth(qv, request);
@@ -780,6 +741,45 @@ export async function apiHandler(parts, request, env) {
     return jsonResponse({ error: false, user_only: true, ongoing: recent || [] }, 200, { service: env.API_NAME || 'CAPI' });
   }
 
+  if (endpoint === 'my_attacks') {
+    // List all attack history for authenticated user
+    const auth = await allowUserOrBotAuth(q, request);
+    if (!auth.ok) return makePolishedError('missing credentials', 401, { hint: 'Provide username/password or use bot auth with discord_user_id.' });
+    
+    const limit = Number(q.limit || 100);
+    const offset = Number(q.offset || 0);
+    const attacks = await Vault.getLogs(env, auth.username);
+    
+    // Paginate and sort by most recent first
+    const sorted = (attacks || []).sort((a, b) => {
+      const aTime = new Date(a.created_at || 0).getTime();
+      const bTime = new Date(b.created_at || 0).getTime();
+      return bTime - aTime;
+    });
+    
+    const paginated = sorted.slice(offset, offset + limit);
+    const totalAttacks = sorted.length;
+    
+    return jsonResponse({
+      error: false,
+      message: 'Attack history retrieved',
+      data: {
+        username: auth.username,
+        total_attacks: totalAttacks,
+        page_size: limit,
+        page_offset: offset,
+        attacks: paginated.map((a, i) => ({
+          index: offset + i + 1,
+          target: a.target || 'unknown',
+          method: a.method || 'unknown',
+          duration: Number(a.duration || 0),
+          concurrents: Number(a.concurrents || 1),
+          timestamp: a.created_at || null
+        }))
+      }
+    }, 200, { service: env.API_NAME || 'CAPI' });
+  }
+
   /**
    * Attack Endpoint Handler
    * Initiates a new DDoS attack or queues it if resources are limited
@@ -861,6 +861,16 @@ export async function apiHandler(parts, request, env) {
     if (user.suspended || userWarnings.suspended || userWarnings.count >= userWarnings.limit) {
       return makePolishedError('account suspended', 403, { suspended: true, warn_status: `${userWarnings.count}/${userWarnings.limit}`, hint: 'This account is suspended. Contact an administrator to restore access.' });
     }
+    
+    // Check if account has expired
+    if (user.expiry_unix && user.expiry_unix > 0) {
+      const nowUnix = Math.floor(Date.now() / 1000);
+      if (nowUnix > user.expiry_unix) {
+        const expiryDate = new Date(user.expiry_unix * 1000).toISOString();
+        return makePolishedError('account expired', 403, { expired: true, expiry_date: expiryDate, hint: 'Your account has expired. Contact an administrator to renew access.' });
+      }
+    }
+    
     if (!user.api_access) return makePolishedError('user has no API access', 403, { hint: 'Enable API access for this account before trying again.' });
 
     // Check if attacks are globally disabled

@@ -246,35 +246,4 @@ export function routeNotFound(path = null) {
   }, 404);
 }
 
-/**
- * Build standardized success response
- * @param {string} message - Response message
- * @param {Object} data - Response data
- * @param {number} status - HTTP status (default 200)
- * @param {Object} meta - Additional metadata
- * @returns {Response} Formatted response
- */
-export function successResponse(message, data = null, status = 200, meta = {}) {
-  const payload = {
-    error: false,
-    message,
-    ...(data !== null ? { data } : {})
-  };
-  
-  return jsonResponse(payload, status, meta);
-}
 
-/**
- * Build standardized error response with hint
- * @param {string} message - Error message
- * @param {number} status - HTTP status
- * @param {Object} details - Error details (hint, error_code, etc.)
- * @returns {Response} Formatted error response
- */
-export function errorResponse(message, status = 400, details = {}) {
-  return jsonResponse({
-    error: true,
-    message,
-    ...details
-  }, status);
-}
