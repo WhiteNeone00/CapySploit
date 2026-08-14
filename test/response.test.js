@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { jsonResponse, makePolishedError } from '../src/response.js';
-import { countUserDailyAttacks, ensureTables, getUserWarningSummary, recordUserWarning } from '../src/vault-db.js';
+import { countUserDailyAttacks, ensureTables, getUserWarningSummary, recordUserWarning, setSystemSetting } from '../src/vault-db.js';
+import { logAuditAction } from '../src/admin.js';
+import { getCachedSystemSetting } from '../src/helpers.js';
 
 test('counts attacks by calendar day instead of a rolling 24h window', async () => {
   const DB = {
@@ -175,4 +177,58 @@ test('adds a polished hint to error responses without clutter', async () => {
   assert.equal(body.hint, 'Review your request and try again.');
   assert.equal(body.supported_routes, undefined, 'supported_routes should not be in response');
   assert.equal(body.examples, undefined, 'examples should not be in response');
+});
+
+test('logs admin audit actions to the audit_logs table', async () => {
+  const insertCalls = [];
+  const DB = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          insertCalls.push({ sql, args });
+          return {
+            async run() {
+              return { meta: { changes: 1 } };
+            }
+          };
+        }
+      };
+    }
+  };
+
+  const result = await logAuditAction({ capi_db: DB }, 'admin1', 'add_user', 'alice', { reason: 'created' }, '127.0.0.1', 'success');
+
+  assert.equal(result.status, 'success');
+  assert.ok(insertCalls.some((call) => call.sql.includes('INSERT INTO audit_logs')));
+});
+
+test('invalidates cached system settings after the database setting changes', async () => {
+  const DB = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async run() {
+              return { meta: { changes: 1 } };
+            },
+            async all() {
+              if (sql.includes('SELECT * FROM system_settings WHERE key = ?')) {
+                return { results: [{ key: 'maintenance_mode', value: 'false' }] };
+              }
+              return { results: [] };
+            }
+          };
+        }
+      };
+    }
+  };
+
+  const env = { capi_db: DB };
+  const first = await getCachedSystemSetting('maintenance_mode', async () => 'true');
+  assert.equal(first, 'true');
+
+  await setSystemSetting(env, 'maintenance_mode', 'false', 'boolean', 'API maintenance mode');
+
+  const refreshed = await getCachedSystemSetting('maintenance_mode', async () => 'false');
+  assert.equal(refreshed, 'false');
 });

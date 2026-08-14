@@ -72,6 +72,106 @@ function validatePassword(password) {
   return { valid: true, reason: 'OK' };
 }
 
+export async function logAuditAction(env, adminUsername, action, targetUser, details = {}, sourceIp = 'unknown', status = 'success') {
+  const DB = env && (env.capi_db || env.CAPI_DB || env.DB || env.CAPI_db);
+  if (!DB) return { ok: false, status: 'skipped', reason: 'no_database' };
+
+  try {
+    const setupStatement = DB.prepare(`CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      admin_username TEXT,
+      action TEXT,
+      target_user TEXT,
+      details TEXT,
+      source_ip TEXT,
+      status TEXT,
+      created_at TEXT
+    )`);
+    if (setupStatement && typeof setupStatement.run === 'function') {
+      await setupStatement.run();
+    }
+
+    const record = {
+      admin_username: adminUsername || 'system',
+      action: String(action || 'unknown'),
+      target_user: targetUser || null,
+      details: typeof details === 'string' ? details : JSON.stringify(details || {}),
+      source_ip: sourceIp || 'unknown',
+      status: String(status || 'success'),
+      created_at: new Date().toISOString()
+    };
+
+    const insertSql = `INSERT INTO audit_logs (admin_username, action, target_user, details, source_ip, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`;
+    const insertStatement = DB.prepare(insertSql);
+    const executeInsert = typeof insertStatement.run === 'function'
+      ? insertStatement
+      : (typeof insertStatement.bind === 'function' ? insertStatement.bind(
+          record.admin_username,
+          record.action,
+          record.target_user,
+          record.details,
+          record.source_ip,
+          record.status,
+          record.created_at
+        ) : null);
+
+    if (executeInsert && typeof executeInsert.run === 'function') {
+      await executeInsert.run();
+    } else if (typeof insertStatement.bind === 'function') {
+      const bound = insertStatement.bind(
+        record.admin_username,
+        record.action,
+        record.target_user,
+        record.details,
+        record.source_ip,
+        record.status,
+        record.created_at
+      );
+      if (bound && typeof bound.run === 'function') {
+        await bound.run();
+      }
+    }
+
+    return { ok: true, status: record.status, created_at: record.created_at };
+  } catch (error) {
+    console.error('Failed to log audit action:', error);
+    return { ok: false, status: 'failed', reason: error.message || 'unknown_error' };
+  }
+}
+
+export async function getAuditLogs(env, options = {}) {
+  const DB = env && (env.capi_db || env.CAPI_DB || env.DB || env.CAPI_db);
+  if (!DB) return { logs: [], total: 0, limit: Number(options.limit || 50), offset: Number(options.offset || 0) };
+
+  try {
+    const limit = Math.max(1, Number(options.limit || 50));
+    const offset = Math.max(0, Number(options.offset || 0));
+    const statement = DB.prepare(`CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      admin_username TEXT,
+      action TEXT,
+      target_user TEXT,
+      details TEXT,
+      source_ip TEXT,
+      status TEXT,
+      created_at TEXT
+    )`);
+    if (statement && typeof statement.run === 'function') {
+      await statement.run();
+    }
+
+    const countResult = await DB.prepare('SELECT COUNT(*) AS total FROM audit_logs').all();
+    const total = Number(countResult?.results?.[0]?.total || 0);
+    const rowsResult = await DB.prepare('SELECT * FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?').bind(limit, offset).all();
+    const logs = rowsResult?.results || [];
+
+    return { logs, total, limit, offset };
+  } catch (error) {
+    console.error('Failed to fetch audit logs:', error);
+    return { logs: [], total: 0, limit: Number(options.limit || 50), offset: Number(options.offset || 0), error: error.message || 'unknown_error' };
+  }
+}
+
 async function requireAdminCredentials(q, env) {
   const username = String(q.username || '').trim();
   const password = String(q.password || '').trim();
@@ -455,6 +555,33 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
           has_next: page < totalPages, has_prev: page > 1
         }
       } 
+    });
+  }
+
+  if (endpoint === 'view_audit_logs') {
+    const limit = Number(q.limit || 50);
+    const offset = Number(q.offset || 0);
+    const auditData = await getAuditLogs(env, { limit, offset });
+    const validLimit = Math.max(1, Number.isFinite(limit) ? limit : 50);
+    const validOffset = Math.max(0, Number.isFinite(offset) ? offset : 0);
+    const totalPages = Math.max(1, Math.ceil((auditData.total || 0) / validLimit));
+    const page = Math.floor(validOffset / validLimit) + 1;
+
+    return structuredResponse({
+      error: false,
+      message: `Audit logs retrieved (${(auditData.logs || []).length} of ${auditData.total || 0} entries).`,
+      data: {
+        logs: auditData.logs || [],
+        pagination: {
+          total: auditData.total || 0,
+          limit: validLimit,
+          offset: validOffset,
+          page,
+          pages: totalPages,
+          has_next: page < totalPages,
+          has_prev: page > 1
+        }
+      }
     });
   }
 

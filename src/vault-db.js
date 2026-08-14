@@ -2,6 +2,7 @@ import { DEFAULT_PAYLOAD } from '../payload.js';
 import { DEFAULT_ROOT_CREDENTIALS } from './config.js';
 
 import { USER_LIMITS } from './config.js';
+import { invalidateSystemSettingCache, invalidateMethodCache, invalidateUserCache, invalidateSettingsCache } from './helpers.js';
 
 export function getDB(env) {
   return env && (env.capi_db || env.CAPI_DB || env.DB || env.CAPI_db);
@@ -395,6 +396,8 @@ export async function saveUser(env, user) {
       Number(user.warning_count || 0),
       user.warning_reset_at || now
     ).run();
+    invalidateUserCache(user.username);
+    invalidateSettingsCache();
   } catch (error) {
     console.error('Error in saveUser:', error.message);
     throw error;
@@ -405,6 +408,8 @@ export async function deleteUser(env, username) {
   const DB = getDB(env);
   if (!DB) return;
   await DB.prepare('DELETE FROM users WHERE username = ?').bind(username).run();
+  invalidateUserCache(username);
+  invalidateSettingsCache();
 }
 
 export async function listUsers(env) {
@@ -480,6 +485,8 @@ export async function recordUserWarning(env, username, reason = 'blacklisted tar
     suspendedBy,
     username
   ).run();
+  invalidateUserCache(username);
+  invalidateSettingsCache();
 
   const summary = {
     count: nextCount,
@@ -525,6 +532,8 @@ export async function updateUserLastRequestTime(env, username, ip = null) {
     ? [new Date().toISOString(), ip, username]
     : [new Date().toISOString(), username];
   await DB.prepare(sql).bind(...params).run();
+  invalidateUserCache(username);
+  invalidateSettingsCache();
 }
 
 export async function getUserLastRequestTime(env, username) {
@@ -640,6 +649,8 @@ export async function addMethod(env, method) {
     Number(privateAccess) ? 1 : 0,
     new Date().toISOString()
   ).run();
+  invalidateMethodCache();
+  invalidateSettingsCache();
 }
 
 export async function listMethods(env) {
@@ -653,6 +664,7 @@ export async function addBlacklistTarget(env, target, reason) {
   const DB = getDB(env);
   if (!DB) return;
   await DB.prepare('INSERT INTO blacklist (target, reason, created_at) VALUES (?, ?, ?)').bind(target, reason || 'manual', new Date().toISOString()).run();
+  invalidateSettingsCache();
 }
 
 export async function listBlacklist(env) {
@@ -670,6 +682,7 @@ export async function removeBlacklistTarget(env, idOrTarget) {
   } else {
     await DB.prepare('DELETE FROM blacklist WHERE target = ?').bind(idOrTarget).run();
   }
+  invalidateSettingsCache();
 }
 
 export async function createDiscordLinkRequest(env, username, client, code, expiresAt) {
@@ -776,6 +789,8 @@ export async function setUserSuspension(env, username, suspended, reason = null,
   const DB = getDB(env);
   if (!DB) return;
   await DB.prepare('UPDATE users SET suspended = ?, suspend_reason = ?, suspended_by = ? WHERE username = ?').bind(suspended ? 1 : 0, reason || null, by || null, username).run();
+  invalidateUserCache(username);
+  invalidateSettingsCache();
 }
 
 export async function getPlan(env, planName) {
@@ -838,6 +853,7 @@ export async function createPlan(env, plan) {
     permissions,
     createdAt
   ).run();
+  invalidateSettingsCache();
 
   return getPlan(env, payload.name || payload.Name || 'Custom');
 }
@@ -894,6 +910,7 @@ export async function updatePlan(env, planName, updates = {}) {
 
     const sql = `UPDATE plans SET ${fields.join(', ')} WHERE name = ?`;
     await DB.prepare(sql).bind(...values).run();
+    invalidateSettingsCache();
   } catch (error) {
     console.error(`Error updating plan ${planName}:`, error.message);
     throw error;
@@ -1180,9 +1197,13 @@ export async function syncMethodsFromPayload(env) {
       }
     }
 
+    invalidateMethodCache();
+    invalidateSettingsCache();
     return { added, updated, error: null };
   } catch (error) {
     console.error('syncMethodsFromPayload error:', error.message);
+    invalidateMethodCache();
+    invalidateSettingsCache();
     return { added: 0, updated: 0, error: error.message };
   }
 }
@@ -1262,6 +1283,7 @@ export async function setSystemSetting(env, key, value, type = 'string', descrip
       description,
       new Date().toISOString()
     ).run();
+    invalidateSystemSettingCache(key);
   } catch (error) {
     console.error(`Error setting system setting ${key}:`, error.message);
   }
@@ -1354,6 +1376,8 @@ export async function updateMethod(env, methodName, updates = {}) {
   values.push(methodName);
 
   await DB.prepare(`UPDATE methods SET ${fields.join(', ')} WHERE name = ?`).bind(...values).run();
+  invalidateMethodCache();
+  invalidateSettingsCache();
 }
 
 export async function getDatabaseStats(env) {

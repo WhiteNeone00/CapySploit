@@ -533,6 +533,43 @@ export function isValidPositiveInt(value, min = 0, max = Infinity) {
 }
 
 /**
+ * Check user cooldown using the user.last_request_time timestamp.
+ * Supports plan-specific cooldown values and bypass_anti_spam skips.
+ * @param {string|null} lastRequestTime - ISO timestamp or null
+ * @param {number} cooldownSeconds - Seconds the user must wait between attacks
+ * @param {boolean} bypassEnabled - Whether this user should bypass cooldown
+ * @returns {{ allowed: boolean, secondsUntilAvailable: number }}
+ */
+export function checkUserCooldown(lastRequestTime, cooldownSeconds = 10, bypassEnabled = false) {
+  if (bypassEnabled) {
+    return { allowed: true, secondsUntilAvailable: 0 };
+  }
+
+  const seconds = Number(cooldownSeconds || 0);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return { allowed: true, secondsUntilAvailable: 0 };
+  }
+
+  if (!lastRequestTime) {
+    return { allowed: true, secondsUntilAvailable: 0 };
+  }
+
+  const lastMs = new Date(lastRequestTime).getTime();
+  if (!Number.isFinite(lastMs)) {
+    return { allowed: true, secondsUntilAvailable: 0 };
+  }
+
+  const elapsedMs = Date.now() - lastMs;
+  const minMs = seconds * 1000;
+  const allowed = elapsedMs >= minMs;
+
+  return {
+    allowed,
+    secondsUntilAvailable: allowed ? 0 : Math.ceil((minMs - elapsedMs) / 1000)
+  };
+}
+
+/**
  * Check API rate limit (3-second minimum between requests)
  * Prevents rapid F5 spam and abuse
  * @param {string} identifier - User identifier (username or IP)

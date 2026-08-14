@@ -4,7 +4,7 @@ import * as Vault from './vault-db.js';
 import { getPayloadMethods, getPayloadBlacklists } from '../payload.js';
 import { getUserLimits, isMethodPermittedForUser } from './policy.js';
 import { generateVerificationCode, buildDiscordRoleNames, userPlanRole } from './discord.js';
-import { formatSlotBar, generateAttackId, checkApiRateLimit, applyGlobalRateLimit, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot } from './helpers.js';
+import { formatSlotBar, generateAttackId, checkApiRateLimit, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot } from './helpers.js';
 import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, LOOKUP_SERVICES, USER_LIMITS } from './config.js';
 import { isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget, normalizeBlacklistValue, isBlacklistedTarget, isBlacklistedByMetadata, validatePayloadLength } from './validator.js';
 
@@ -222,8 +222,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
           { hint: 'You are making requests too quickly. Upgrade to bypass rate limits or wait before retrying.' }
         );
       }
-      // Update last request time in database
-      await Vault.updateUserLastRequestTime(env, requestUser.username, request.headers?.get?.('cf-connecting-ip') || null);
+      // Only update last_request_time after a non-attack request completes. Attack cooldown is enforced in the attack handler.
+      if (endpoint !== 'attack') {
+        await Vault.updateUserLastRequestTime(env, requestUser.username, request.headers?.get?.('cf-connecting-ip') || null);
+      }
     }
 
     if (requestUser && requestUser.suspended) return makePolishedError('account suspended', 403, { suspended: true, hint: 'This account is suspended. Contact an administrator to restore access.' });
@@ -893,6 +895,15 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const todays = await Vault.countUserDailyAttacks(env, record.username);
     if (user.max_daily_attacks && todays >= (user.max_daily_attacks || 0)) return makePolishedError('max daily attacks exceeded', 429, { hint: 'Wait until the daily quota resets or ask for a higher daily limit.' });
 
+    const cooldownCheck = checkUserCooldown(user.last_request_time, Number(user.cooldown || 10), Boolean(user.bypass_anti_spam));
+    if (!cooldownCheck.allowed) {
+      return makePolishedError(
+        `Attack cooldown active. Please wait ${cooldownCheck.secondsUntilAvailable} second${cooldownCheck.secondsUntilAvailable !== 1 ? 's' : ''} before launching another attack.`,
+        429,
+        { cooldown_seconds: cooldownCheck.secondsUntilAvailable, hint: 'Wait for your cooldown to expire before launching another attack.' }
+      );
+    }
+
     const userOngoing = await Vault.countUserOngoing(env, record.username);
     if ((userOngoing + record.concurrents) > limits.maxConcurrents) return makePolishedError(`requested concurrents would exceed user's allowed concurrents of ${limits.maxConcurrents} (current running: ${userOngoing})`, 400, { hint: 'Lower the concurrency value or wait for running attacks to finish.' });
 
@@ -982,6 +993,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     };
 
     releaseAttackSlots(record.username);
+    await Vault.updateUserLastRequestTime(env, record.username, request.headers?.get?.('cf-connecting-ip') || null);
     return jsonResponse(responseBody, 200, { service: serviceName });
   }
 
