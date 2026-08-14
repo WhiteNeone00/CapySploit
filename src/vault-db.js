@@ -53,7 +53,8 @@ async function ensureSystemSettings(env) {
     { key: 'default_max_daily_attacks', value: '100', type: 'number', description: 'Default max attacks per day' },
     { key: 'enable_power_saving', value: 'true', type: 'boolean', description: 'Enable power saving mode by default' },
     { key: 'enable_anti_spam', value: 'true', type: 'boolean', description: 'Enable anti-spam protection by default' },
-    { key: 'enable_bypass_blacklist', value: 'false', type: 'boolean', description: 'Allow bypass of blacklist by default' }
+    { key: 'enable_bypass_blacklist', value: 'false', type: 'boolean', description: 'Allow bypass of blacklist by default' },
+    { key: 'service_name', value: 'CAPI', type: 'string', description: 'Public service name for API responses' }
   ];
 
   for (const item of defaults) {
@@ -1313,6 +1314,24 @@ export async function getAttacksDisabled(env) {
 
 export async function setAttacksDisabled(env, disabled) {
   await setSystemSetting(env, 'attacks_disabled', disabled ? 'true' : 'false', 'boolean', 'Disable all attack requests globally');
+}
+
+export async function getServiceName(env) {
+  const value = await getSettingOrDefault(env, 'service_name', 'CAPI');
+  return String(value || 'CAPI');
+}
+
+export async function setServiceName(env, name) {
+  await setSystemSetting(env, 'service_name', String(name || 'CAPI'), 'string', 'Public service name for API responses');
+}
+
+export async function getApiVersion(env) {
+  const value = await getSettingOrDefault(env, 'api_version', '1.0.0');
+  return String(value || '1.0.0');
+}
+
+export async function setApiVersion(env, version) {
+  await setSystemSetting(env, 'api_version', String(version || '1.0.0'), 'string', 'Current API version');
 }
 
 export async function getMethod(env, methodName) {

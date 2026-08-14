@@ -34,7 +34,25 @@ function buildResponseMeta(payload = {}, options = {}) {
 }
 
 export async function resolveServiceName(user, env, fallback = APP_DEFAULTS.DEFAULT_SERVICE_NAME) {
-  return fallback;
+  try {
+    const Vault = await import('./vault-db.js');
+    const serviceName = await Vault.getServiceName(env);
+    return serviceName || fallback;
+  } catch (error) {
+    console.error('Error resolving service name from DB:', error);
+    return fallback;
+  }
+}
+
+export async function getApiVersion(env, fallback = '1.0.0') {
+  try {
+    const Vault = await import('./vault-db.js');
+    const version = await Vault.getApiVersion(env);
+    return version || fallback;
+  } catch (error) {
+    console.error('Error resolving API version from DB:', error);
+    return fallback;
+  }
 }
 
 export function formatErrorDetails(error) {
@@ -199,8 +217,10 @@ export function jsonResponse(payload, status = 200, options = {}) {
   const baseEntries = Object.entries(payloadWithoutFooter).filter(([key]) => !['tips', 'ads', 'timestamp', 'service', 'version'].includes(key));
   const responsePayload = Object.fromEntries(baseEntries);
   responsePayload.timestamp = payloadWithoutFooter.timestamp || new Date().toISOString();
+  // Use options.service (from DB via orchestrator) or fallback to payload/config
   responsePayload.service = options.service || payloadWithoutFooter.service || payloadWithoutFooter.service_name || APP_DEFAULTS.DEFAULT_SERVICE_NAME;
-  responsePayload.version = payloadWithoutFooter.version || '1.0.0';
+  // Use options.version (from DB via orchestrator) or fallback to payload/config  
+  responsePayload.version = options.version || payloadWithoutFooter.version || '1.0.0';
   responsePayload.tips = payloadWithoutFooter.tips || options.tips || meta.tips;
   responsePayload.ads = payloadWithoutFooter.ads || options.ads || meta.ads;
 

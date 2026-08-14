@@ -99,8 +99,11 @@ export async function handleRequest(request, env) {
     );
     const isMaintenance = maintenanceEnabled === 'true';
 
+    // Load service name and version from database with fallback
+    const serviceName = await Vault.getServiceName(env);
+    const apiVersion = await Vault.getApiVersion(env);
+
     if (isMaintenance && parts[0] !== 'admin') {
-      const serviceName = env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME;
       logger.info('maintenance_mode_active', { endpoint: parts[0] });
       return jsonResponse({
         error: true,
@@ -111,15 +114,14 @@ export async function handleRequest(request, env) {
         available: ['admin'],
         endpoints: { admin: '/admin/<action>' },
         hint: 'Only administrative routes are available during maintenance. Please try again later.'
-      }, 503, { service: serviceName, requestId });
+      }, 503, { service: serviceName, version: apiVersion, requestId });
     }
 
     if (path === '' || path === 'health') {
-      const serviceName = env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME;
       logger.metric('health_check', 1);
       return jsonResponse({
         name: serviceName,
-        version: env.API_VERSION || '1.0.0',
+        version: apiVersion,
         status: isMaintenance ? 'maintenance' : 'ok',
         uptime: isMaintenance ? 'maintenance' : 'online',
         timestamp: new Date().toISOString(),
@@ -131,7 +133,7 @@ export async function handleRequest(request, env) {
           lookup: '/lookup/<type>'
         },
         available_actions: ['view_plan', 'attack', 'view_ongoing', 'my_attacks', 'network_statistics', 'list_methods', 'syntax_check']
-      }, isMaintenance ? 503 : 200, { service: serviceName, requestId });
+      }, isMaintenance ? 503 : 200, { service: serviceName, version: apiVersion, requestId });
     }
 
     // Initialize database and seed defaults on first request

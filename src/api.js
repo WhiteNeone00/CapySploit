@@ -178,6 +178,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   const endpoint = parts[0] || '';
   const GLOBAL_API_SLOTS = Number(env.GLOBAL_API_SLOTS || 30);
 
+  // Load service name and version from database once per request
+  const serviceName = await Vault.getServiceName(env);
+  const apiVersion = await Vault.getApiVersion(env);
+
   let requestUser = requestContext.user || null;
 
   // Only protect sensitive endpoints. Public endpoints (network_statistics, endpoints/docs/help,
@@ -314,7 +318,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         src_name: APP_DEFAULTS.SRC_NAME,
         src_uptime: 'up'
       }
-    }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    }, 200, { service: serviceName, version: apiVersion });
   }
 
 
@@ -334,7 +338,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
           { name: 'GET /admin/list_methods', description: 'List available methods', usage: '' }
         ]
       }
-    }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    }, 200, { service: serviceName, version: apiVersion });
   }
 
   if (endpoint === 'graph') {
@@ -406,7 +410,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         uptime,
         updated_at: new Date().toISOString()
       }
-    }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    }, 200, { service: serviceName, version: apiVersion });
   }
 
   if (endpoint === 'methods') {
@@ -439,10 +443,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const discordUserId = q.discord_user_id || q.discord_id || q.user_id;
     if (!discordUserId) return makePolishedError('missing discord_user_id', 400, { hint: 'Provide discord_user_id to lookup your linked profile.' });
     const link = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordUserId);
-    if (!link) return jsonResponse({ error: true, message: 'Discord account not linked. Use /link to verify your account first; /plan is only available for linked users.', client: null }, 404, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (!link || !link.username) return jsonResponse({ error: true, message: 'Discord account not linked. Use /link to verify your account first; /plan is only available for linked users.', client: null }, 404, { service: serviceName, version: apiVersion });
     const user = await Vault.getUser(env, link.username);
-    if (!user) return jsonResponse({ error: true, message: 'Linked user account no longer exists.' }, 500, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
-    const serviceName = await resolveServiceName(user, env, env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME);
+    if (!user) return jsonResponse({ error: true, message: 'Linked user account no longer exists.' }, 500, { service: serviceName, version: apiVersion });
+    const userServiceName = await resolveServiceName(user, env, serviceName);
     const warningSummary = await Vault.getUserWarningSummary(env, user.username);
     const discordLink = await Vault.getDiscordLinkByUsername(env, user.username);
     return jsonResponse({
@@ -487,10 +491,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (!username || !password || !client) return makePolishedError('missing username, password or client', 400, { hint: 'Send username, password and client=discord in the query string.' });
 
     const user = await Vault.getUser(env, username);
-    if (!user) return jsonResponse({ error: true, message: 'user does not exist', client, code: null }, 404, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
-    if (user.password !== password) return jsonResponse({ error: true, message: 'wrong password', client, code: null }, 401, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
-    if (user.suspended) return jsonResponse({ error: true, message: 'account suspended', client, code: null }, 403, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
-    if (!(user.api ?? user.api_access)) return jsonResponse({ error: true, message: 'api access disabled', client, code: null }, 403, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (!user) return jsonResponse({ error: true, message: 'user does not exist', client, code: null }, 404, { service: serviceName, version: apiVersion });
+    if (user.password !== password) return jsonResponse({ error: true, message: 'wrong password', client, code: null }, 401, { service: serviceName, version: apiVersion });
+    if (user.suspended) return jsonResponse({ error: true, message: 'account suspended', client, code: null }, 403, { service: serviceName, version: apiVersion });
+    if (!(user.api ?? user.api_access)) return jsonResponse({ error: true, message: 'api access disabled', client, code: null }, 403, { service: serviceName, version: apiVersion });
 
     const existingVerified = await Vault.getVerifiedDiscordLinkByUsername(env, username);
     if (existingVerified) {
@@ -504,13 +508,13 @@ export async function apiHandler(parts, request, env, requestId, logger, request
           discord_username: existingVerified.discord_username,
           verified_at: existingVerified.verified_at
         }
-      }, 409, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+      }, 409, { service: serviceName, version: apiVersion });
     }
 
     const code = generateVerificationCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await Vault.createDiscordLinkRequest(env, username, client, code, expiresAt);
-    return jsonResponse({ error: false, message: 'verification code generated', client, code, expires_at: expiresAt }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    return jsonResponse({ error: false, message: 'verification code generated', client, code, expires_at: expiresAt }, 200, { service: serviceName, version: apiVersion });
   }
 
   if (endpoint === 'link') {
@@ -532,14 +536,14 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         client,
         code: null,
         discord_link: { username: existingDiscordLink.username, discord_user_id: discordUserId, discord_username: existingDiscordLink.discord_username }
-      }, 409, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+      }, 409, { service: serviceName, version: apiVersion });
     }
 
     const requestRow = await Vault.getDiscordLinkByCode(env, code);
-    if (!requestRow) return jsonResponse({ error: true, message: 'invalid or unknown code', client, code }, 404, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
-    if (requestRow.client !== client) return jsonResponse({ error: true, message: 'client mismatch', client, code }, 400, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
-    if (requestRow.status === 'verified') return jsonResponse({ error: true, message: 'code already used', client, code }, 409, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
-    if (new Date() > new Date(requestRow.expires_at)) return jsonResponse({ error: true, message: 'code expired', client, code }, 410, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (!requestRow) return jsonResponse({ error: true, message: 'invalid or unknown code', client, code }, 404, { service: serviceName, version: apiVersion });
+    if (requestRow.client !== client) return jsonResponse({ error: true, message: 'client mismatch', client, code }, 400, { service: serviceName, version: apiVersion });
+    if (requestRow.status === 'verified') return jsonResponse({ error: true, message: 'code already used', client, code }, 409, { service: serviceName, version: apiVersion });
+    if (new Date() > new Date(requestRow.expires_at)) return jsonResponse({ error: true, message: 'code expired', client, code }, 410, { service: serviceName, version: apiVersion });
 
     const existingVerified = await Vault.getVerifiedDiscordLinkByUsername(env, requestRow.username);
     if (existingVerified) {
@@ -549,29 +553,36 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         client,
         code,
         discord_link: { username: existingVerified.username, discord_user_id: existingVerified.discord_user_id, discord_username: existingVerified.discord_username }
-      }, 409, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+      }, 409, { service: serviceName, version: apiVersion });
     }
 
     const verifiedRow = await Vault.verifyDiscordLinkCode(env, code, discordUserId, discordUsername);
     const linkedUser = await Vault.getUser(env, verifiedRow.username);
-    if (!linkedUser) return jsonResponse({ error: true, message: 'linked user no longer exists', client, code }, 500, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (!linkedUser) return jsonResponse({ error: true, message: 'linked user no longer exists', client, code }, 500, { service: serviceName, version: apiVersion });
 
     const roles = buildDiscordRoleNames(linkedUser, env);
     const planRole = userPlanRole(linkedUser, env);
-    return jsonResponse({ error: false, message: 'discord account verified', client, code, discord_user_id: discordUserId, username: linkedUser.username, roles, plan_role: planRole }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    return jsonResponse({ error: false, message: 'discord account verified', client, code, discord_user_id: discordUserId, username: linkedUser.username, roles, plan_role: planRole }, 200, { service: serviceName, version: apiVersion });
   }
 
   if (endpoint === 'unlink') {
     const qv = q;
     const auth = await allowUserOrBotAuth(qv, request);
-    if (!auth.ok) return makePolishedError('missing credentials', 401, { hint: 'Provide username/password or use bot auth with discord_user_id.' });
+    if (!auth || !auth.ok) return makePolishedError('missing credentials', 401, { hint: 'Provide username/password or use bot auth with discord_user_id.' });
     const discordUserId = q.discord_user_id || q.user_id || q.discord_id;
     if (!discordUserId) return makePolishedError('missing discord_user_id', 400, { hint: 'Provide discord_user_id to remove your Discord link.' });
     const existingLink = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordUserId);
-    if (!existingLink) return jsonResponse({ error: true, message: 'Discord account is not currently linked. Use /link to verify first.' }, 404, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
-    const unlinked = await Vault.unlinkDiscordLinkByDiscordId(env, discordUserId, 'self');
-    if (!unlinked) return jsonResponse({ error: true, message: 'Unable to unlink Discord account at this time.', service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME }, 500, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
-    return jsonResponse({ error: false, message: 'Discord account unlinked successfully.', discord_user_id: discordUserId, discord_username: unlinked.discord_username, username: unlinked.username, unlinked_at: unlinked.unlinked_at }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (!existingLink || !existingLink.username) return jsonResponse({ error: true, message: 'Discord account is not currently linked. Use /link to verify first.' }, 404, { service: serviceName, version: apiVersion });
+    
+    let unlinked = null;
+    try {
+      unlinked = await Vault.unlinkDiscordLinkByDiscordId(env, discordUserId, 'self');
+    } catch (e) {
+      return jsonResponse({ error: true, message: `Failed to unlink Discord account: ${e.message}` }, 500, { service: serviceName, version: apiVersion });
+    }
+    
+    if (!unlinked || !unlinked.username) return jsonResponse({ error: true, message: 'Unable to unlink Discord account at this time.' }, 500, { service: serviceName, version: apiVersion });
+    return jsonResponse({ error: false, message: 'Discord account unlinked successfully.', discord_user_id: discordUserId, discord_username: unlinked.discord_username, username: unlinked.username, unlinked_at: unlinked.unlinked_at }, 200, { service: serviceName, version: apiVersion });
   }
 
   if (endpoint === 'view_plan') {
@@ -591,7 +602,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       );
     }
     
-    const serviceName = await resolveServiceName(u, env, env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME);
+    const userServiceName2 = await resolveServiceName(u, env, serviceName);
     const discordLink = await Vault.getVerifiedDiscordLinkByUsername(env, u.username);
     const attacksToday = await Vault.countUserDailyAttacks(env, u.username);
     const attacksRemaining = Math.max(0, Number(u.max_daily_attacks || 0) - Number(attacksToday || 0));
@@ -676,7 +687,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     // Return recent/ongoing for this user
     const limit = Number(qv.limit || 10);
     const recent = await Vault.getRecentAttacks(env, username, limit);
-    return jsonResponse({ error: false, user_only: true, ongoing: recent || [] }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    return jsonResponse({ error: false, user_only: true, ongoing: recent || [] }, 200, { service: serviceName, version: apiVersion });
   }
 
   if (endpoint === 'my_attacks') {
@@ -715,7 +726,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
           timestamp: a.created_at || null
         }))
       }
-    }, 200, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    }, 200, { service: serviceName, version: apiVersion });
   }
 
   /**
@@ -785,7 +796,8 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     };
 
     const user = record.username ? await Vault.getUser(env, record.username) : null;
-    if (!user || user.username !== record.username) return makePolishedError('user does not exist', 404, { hint: 'Verify the username supplied in the request.' });
+    if (!user) return makePolishedError('user does not exist', 404, { hint: 'Verify the username supplied in the request.' });
+    if (!user.username) return makePolishedError('user record is invalid', 500, { hint: 'User account data is corrupted. Contact support.' });
 
     // If not bot-authenticated, require password parameter and validate credentials
     if (!botAuth) {
@@ -795,26 +807,28 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       if (String(user.password || '') !== providedPassword) return makePolishedError('invalid credentials', 401, { hint: 'Username or password is incorrect.' });
     }
 
-    if (user.suspended) {
+    if (user.suspended || user.suspended === true) {
       return makePolishedError('account suspended', 403, { suspended: true, hint: 'This account is suspended. Contact an administrator to restore access.' });
     }
     
     // Check if account has expired
-    if (user.expiry_unix && user.expiry_unix > 0) {
+    const expiryUnix = Number(user?.expiry_unix || 0);
+    if (expiryUnix && expiryUnix > 0) {
       const nowUnix = Math.floor(Date.now() / 1000);
-      if (nowUnix > user.expiry_unix) {
-        const expiryDate = new Date(user.expiry_unix * 1000).toISOString();
+      if (nowUnix > expiryUnix) {
+        const expiryDate = new Date(expiryUnix * 1000).toISOString();
         return makePolishedError('account expired', 403, { expired: true, expiry_date: expiryDate, hint: 'Your account has expired. Contact an administrator to renew access.' });
       }
     }
     
-    if (!(user.api ?? user.api_access)) return makePolishedError('user has no API access', 403, { hint: 'Enable API access for this account before trying again.' });
+    if (!(user?.api ?? user?.api_access)) return makePolishedError('user has no API access', 403, { hint: 'Enable API access for this account before trying again.' });
 
     // Check IP whitelist if configured
-    if (user.whitelisted_ip) {
+    const whitelistedIp = user?.whitelisted_ip || null;
+    if (whitelistedIp) {
       const requestIp = request.headers?.get?.('cf-connecting-ip') || request.headers?.get?.('x-forwarded-for') || 'unknown';
-      if (requestIp !== user.whitelisted_ip) {
-        return makePolishedError('access denied from this IP address', 403, { ip: requestIp, whitelisted_ip: user.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' });
+      if (requestIp !== whitelistedIp) {
+        return makePolishedError('access denied from this IP address', 403, { ip: requestIp, whitelisted_ip: whitelistedIp, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' });
       }
     }
 
@@ -832,7 +846,14 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     
     // Sync payload methods if any are missing from the database
     if (!methodNames.includes(record.method)) {
-      await Vault.syncMethodsFromPayload(env);
+      try {
+        const syncResult = await Vault.syncMethodsFromPayload(env);
+        if (syncResult?.error) {
+          return makePolishedError(`Failed to sync methods: ${syncResult.error}`, 500, { hint: 'Method synchronization failed. Please try again.' });
+        }
+      } catch (e) {
+        return makePolishedError(`Method sync error: ${e.message}`, 500, { hint: 'Could not verify method availability.' });
+      }
     }
 
     const targetType = ((payloadMethods.find(m => (m.name || '').toLowerCase() === record.method) || null)?.target_type || expects || 'ip').toLowerCase();
@@ -866,7 +887,8 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       || isBlacklistedByMetadata(ipinfo, payloadBlacklists);
     if (targetBlocked) {
       // Check if user has bypass_blacklist enabled
-      if (!user.bypass_blacklist) {
+      const hasBypassBlacklist = Boolean(user?.bypass_blacklist || false);
+      if (!hasBypassBlacklist) {
         const warningSummary = await Vault.recordUserWarning(env, user.username, `blacklisted target ${record.target}`);
         return makePolishedError('blacklisted target', 403, {
           target: record.target,
@@ -881,7 +903,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         });
       }
       // User has bypass_blacklist - log but allow the attack
-      console.warn(`⚠️ User ${record.username} bypassed blacklist for target ${record.target}`);
+      console.warn(`⚠️ User ${record?.username || 'unknown'} bypassed blacklist for target ${record?.target || 'unknown'}`);
     }
 
     const limits = getUserLimits(user);
@@ -893,9 +915,13 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     }
 
     const todays = await Vault.countUserDailyAttacks(env, record.username);
-    if (user.max_daily_attacks && todays >= (user.max_daily_attacks || 0)) return makePolishedError('max daily attacks exceeded', 429, { hint: 'Wait until the daily quota resets or ask for a higher daily limit.' });
+    const maxDailyAttacks = Number(user?.max_daily_attacks || 0);
+    if (maxDailyAttacks > 0 && todays >= maxDailyAttacks) {
+      return makePolishedError('max daily attacks exceeded', 429, { hint: 'Wait until the daily quota resets or ask for a higher daily limit.' });
+    }
 
-    const cooldownCheck = checkUserCooldown(user.last_request_time, Number(user.cooldown || 10), Boolean(user.bypass_anti_spam));
+    const userCooldownSeconds = Number(user?.cooldown || 10);
+    const cooldownCheck = checkUserCooldown(user?.last_request_time || null, userCooldownSeconds, Boolean(user?.bypass_anti_spam));
     if (!cooldownCheck.allowed) {
       return makePolishedError(
         `Attack cooldown active. Please wait ${cooldownCheck.secondsUntilAvailable} second${cooldownCheck.secondsUntilAvailable !== 1 ? 's' : ''} before launching another attack.`,
@@ -905,15 +931,23 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     }
 
     const userOngoing = await Vault.countUserOngoing(env, record.username);
-    if ((userOngoing + record.concurrents) > limits.maxConcurrents) return makePolishedError(`requested concurrents would exceed user's allowed concurrents of ${limits.maxConcurrents} (current running: ${userOngoing})`, 400, { hint: 'Lower the concurrency value or wait for running attacks to finish.' });
+    if (userOngoing !== null && userOngoing !== undefined) {
+      if ((userOngoing + record.concurrents) > limits.maxConcurrents) {
+        return makePolishedError(`requested concurrents would exceed user's allowed concurrents of ${limits.maxConcurrents} (current running: ${userOngoing})`, 400, { hint: 'Lower the concurrency value or wait for running attacks to finish.' });
+      }
+    }
 
     const methodMaxSlots = Number(methodMeta?.max_slots || 0);
     const ongoing = await Vault.countOngoing(env);
-    const userBypass = Boolean(user.bypass_slots || 0);
+    if (ongoing === null || ongoing === undefined) {
+      return makePolishedError('Unable to check slot availability', 500, { hint: 'Could not verify API slots. Please try again.' });
+    }
+    
+    const userBypass = Boolean(user?.bypass_slots || false);
 
     if (methodMaxSlots > 0) {
       const methodOngoing = await Vault.countMethodOngoing(env, record.method);
-      if (methodOngoing >= methodMaxSlots) {
+      if (methodOngoing !== null && methodOngoing !== undefined && methodOngoing >= methodMaxSlots) {
         return makePolishedError(`method ${record.method} is at capacity`, 429, {
           hint: `The ${record.method} method is at capacity (${methodOngoing}/${methodMaxSlots}). Try again when a slot frees up.`
         });
@@ -928,13 +962,17 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     // Acquire concurrency slots before launching attack
     if (CONCURRENCY_CONFIG.ENABLED) {
-      const slotCheck = await acquireAttackSlots(record.username, 1, 5000);
-      if (!slotCheck.acquired) {
-        return makePolishedError(slotCheck.hint || 'Concurrency limit reached', 429, {
-          reason: slotCheck.reason,
-          global_capacity: slotCheck.global,
-          user_capacity: slotCheck.user
-        });
+      try {
+        const slotCheck = await acquireAttackSlots(record.username, 1, 5000);
+        if (!slotCheck || !slotCheck.acquired) {
+          return makePolishedError(slotCheck?.hint || 'Concurrency limit reached', 429, {
+            reason: slotCheck?.reason || 'unknown',
+            global_capacity: slotCheck?.global,
+            user_capacity: slotCheck?.user
+          });
+        }
+      } catch (e) {
+        return makePolishedError(`Slot acquisition failed: ${e.message}`, 500, { hint: 'Could not acquire attack slots. Please try again.' });
       }
     }
 
@@ -945,7 +983,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     const attacks_remaining = Math.max(0, Number(user.max_daily_attacks || 0) - Number(todays || 0));
     const ongoing_now = await Vault.countOngoing(env);
-    const serviceName = await resolveServiceName(user, env, env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME);
+    const userServiceName = await resolveServiceName(user, env, serviceName);
     const attackEndTime = performance.now(); // End timing
     const executionTime = attackEndTime - attackStartTime; // Calculate execution time
     const attackId = generateAttackId(); // Generate unique attack ID

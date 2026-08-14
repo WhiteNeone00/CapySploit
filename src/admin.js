@@ -960,5 +960,55 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     }
   }
 
+  // Service settings endpoint (get/set service name and version)
+  if (endpoint === 'service_settings' || endpoint === 'config_settings') {
+    const action = String(q.action || 'get').toLowerCase();
+    
+    if (action === 'get') {
+      const serviceName = await Vault.getServiceName(env);
+      const apiVersion = await Vault.getApiVersion(env);
+      return jsonResponse({
+        error: false,
+        message: 'Service settings retrieved',
+        settings: {
+          service_name: serviceName,
+          api_version: apiVersion
+        }
+      });
+    }
+    
+    if (action === 'set') {
+      if (!q.service_name && !q.api_version) {
+        return makePolishedError('provide at least one of: service_name, api_version', 400, { hint: 'Example: ?action=set&service_name=MyAPI&api_version=2.0.0' });
+      }
+      
+      if (q.service_name) {
+        await Vault.setServiceName(env, q.service_name);
+      }
+      if (q.api_version) {
+        await Vault.setApiVersion(env, q.api_version);
+      }
+      
+      const updatedName = await Vault.getServiceName(env);
+      const updatedVersion = await Vault.getApiVersion(env);
+      
+      await logAuditAction(env, adminUsername, 'update_service_settings', null, { 
+        service_name: q.service_name || null,
+        api_version: q.api_version || null
+      }, sourceIp, 'success');
+      
+      return jsonResponse({
+        error: false,
+        message: 'Service settings updated successfully',
+        settings: {
+          service_name: updatedName,
+          api_version: updatedVersion
+        }
+      });
+    }
+    
+    return makePolishedError('unknown action', 400, { hint: 'Use ?action=get or ?action=set' });
+  }
+
   return routeNotFound();
 }

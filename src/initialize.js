@@ -57,7 +57,8 @@ async function initializeSystemSettings(env) {
     { key: 'cleanup_interval_hours', value: '1', type: 'number', description: 'How often to run cleanup tasks (hours)' },
     { key: 'audit_log_retention_days', value: '90', type: 'number', description: 'How long to keep audit logs (days)' },
     { key: 'default_user_plan', value: 'Default', type: 'string', description: 'Default plan assigned to new users' },
-    { key: 'api_version', value: '1.0.0', type: 'string', description: 'Current API version' }
+    { key: 'api_version', value: '1.0.0', type: 'string', description: 'Current API version' },
+    { key: 'service_name', value: 'CAPI', type: 'string', description: 'Public service name for API responses' }
   ];
 
   for (const setting of defaults) {
