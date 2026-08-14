@@ -62,7 +62,10 @@ async function initializeSystemSettings(env) {
 
   for (const setting of defaults) {
     try {
-      await Vault.setSystemSetting(env, setting.key, setting.value, setting.type, setting.description);
+      const existing = await Vault.getSystemSetting(env, setting.key);
+      if (!existing) {
+        await Vault.setSystemSetting(env, setting.key, setting.value, setting.type, setting.description);
+      }
     } catch (e) {
       console.warn(`Failed to initialize setting ${setting.key}:`, e.message);
     }

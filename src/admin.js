@@ -212,7 +212,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       reseller: 0,
       vip: 0,
       holder: 0,
-      api_access: 1,
+      api: 1,
       max_time: USER_LIMITS.DEFAULT_MAX_TIME,
       cooldown: USER_LIMITS.DEFAULT_COOLDOWN,
       max_concurrents: USER_LIMITS.DEFAULT_MAX_CONCURRENTS,
@@ -395,7 +395,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
         holder: Boolean(u.holder),
         reseller: Boolean(u.reseller),
         owner: Boolean(u.owner || false),
-        api: Boolean(u.api_access),
+        api: Boolean(u.api ?? u.api_access),
         max_time: Number(u.max_time || 60),
         cooldown: Number(u.cooldown || 10),
         max_concurrents: Number(u.max_concurrents || 1),
@@ -403,8 +403,8 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
         attacks_today: Number(attacksToday || 0),
         attacks_remaining: attacksRemaining,
         ongoing_attacks: ongoingAttacks,
-        power_saving: Boolean(u.power_saving !== 0),
-        bypass_power: Boolean(u.power_saving === 0),
+        power_saving: u.power_saving === undefined || u.power_saving === null || u.power_saving === '' ? true : Boolean(u.power_saving !== 0 && u.power_saving !== false && u.power_saving !== 'false' && u.power_saving !== '0'),
+        bypass_power: u.power_saving === undefined || u.power_saving === null || u.power_saving === '' ? false : !Boolean(u.power_saving !== 0 && u.power_saving !== false && u.power_saving !== 'false' && u.power_saving !== '0'),
         bypass_anti_spam: Boolean(u.bypass_anti_spam || false),
         bypass_blacklist: Boolean(u.bypass_blacklist || false),
         suspended: Boolean(u.suspended),
@@ -685,6 +685,24 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     });
   }
 
+  // Sync methods from payload.js to database
+  if (endpoint === 'sync_methods' || endpoint === 'methods_sync') {
+    const result = await Vault.syncMethodsFromPayload(env);
+    if (result.error) {
+      return makePolishedError(`Sync failed: ${result.error}`, 500);
+    }
+    
+    return jsonResponse({
+      error: false,
+      message: `Methods synced from payload.js - ${result.added} added, ${result.updated} updated`,
+      sync_result: {
+        methods_added: result.added,
+        methods_updated: result.updated,
+        timestamp: new Date().toISOString()
+      }
+    });
+  }
+
   // Disable/enable attacks globally
   if (endpoint === 'disable_attacks' || endpoint === 'attacks_disable') {
     // ENDPOINT: /admin/disable_attacks - Toggle attacks globally on/off
@@ -763,7 +781,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
   if (endpoint === 'edit_method') {
     // ENDPOINT: /admin/edit_method - Configure which ranks/plans can use a method
     // Auth: Requires valid admin credentials
-    // Parameters: method_name (required), default_user/vip_user/reseller/admin (0 or 1)
+    // Parameters: method_name (required), default_access/vip/reseller/admin/max_time/raw_access/star_access/private_access (0 or 1 / integer)
     // Returns: Updated method details with access config
     
     if (!q.method_name) {
@@ -771,13 +789,21 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     }
     
     const updates = {};
-    if (q.default_user !== undefined) updates.default_user = Number(q.default_user) ? 1 : 0;
-    if (q.vip_user !== undefined) updates.vip_user = Number(q.vip_user) ? 1 : 0;
+    if (q.default_access !== undefined || q.default_user !== undefined) {
+      updates.default_access = Number(q.default_access ?? q.default_user) ? 1 : 0;
+    }
+    if (q.vip !== undefined || q.vip_user !== undefined) {
+      updates.vip = Number(q.vip ?? q.vip_user) ? 1 : 0;
+    }
     if (q.reseller !== undefined) updates.reseller = Number(q.reseller) ? 1 : 0;
     if (q.admin !== undefined) updates.admin = Number(q.admin) ? 1 : 0;
+    if (q.max_time !== undefined) updates.max_time = q.max_time === null || q.max_time === '' ? null : Number(q.max_time);
+    if (q.raw_access !== undefined) updates.raw_access = Number(q.raw_access) ? 1 : 0;
+    if (q.star_access !== undefined) updates.star_access = Number(q.star_access) ? 1 : 0;
+    if (q.private_access !== undefined) updates.private_access = Number(q.private_access) ? 1 : 0;
     
     if (Object.keys(updates).length === 0) {
-      return makePolishedError('no updates provided', 400, { hint: 'Provide at least one access level (default_user, vip_user, reseller, admin) set to 0 or 1.' });
+      return makePolishedError('no updates provided', 400, { hint: 'Provide at least one access level or time value (default_access, vip, reseller, admin, max_time, raw_access, star_access, private_access) set appropriately.' });
     }
     
     try {
@@ -792,10 +818,14 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
         message: `Method '${q.method_name}' access levels updated successfully.`,
         method: method,
         access_config: {
-          default_user: method.default_user,
-          vip_user: method.vip_user,
+          default_access: method.default_access,
+          vip: method.vip,
           reseller: method.reseller,
-          admin: method.admin
+          admin: method.admin,
+          max_time: method.max_time ?? null,
+          raw_access: method.raw_access,
+          star_access: method.star_access,
+          private_access: method.private_access
         }
       });
     } catch (e) {

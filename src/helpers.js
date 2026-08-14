@@ -1,6 +1,111 @@
 // Shared utility functions used across multiple modules
 // Extract duplicated and common functions here for DRY principle
-import { PAGINATION_CONFIG, API_CONFIG, RATE_LIMIT_CONFIG, FAILED_AUTH_CONFIG, TIMEOUT_CONFIG, CACHE_CONFIG, CONCURRENCY_CONFIG } from './config.js';
+import { getPayloadMethods } from '../payload.js';
+import { PAGINATION_CONFIG, API_CONFIG, RATE_LIMIT_CONFIG, FAILED_AUTH_CONFIG, TIMEOUT_CONFIG, CACHE_CONFIG, CONCURRENCY_CONFIG, DEFAULT_PLANS, DEFAULT_METHODS } from './config.js';
+
+// ==================== DB-FIRST CONFIGURATION PATTERN ====================
+// All settings check database (system_settings) first, then fall back to config.js
+// This allows dynamic configuration without code changes
+
+/**
+ * Get a setting from database with fallback to config.js
+ * @param {Object} env - Cloudflare environment
+ * @param {string} key - Setting key (e.g., 'maintenance_mode', 'max_concurrent_attacks')
+ * @param {*} configFallback - Value from config.js to use if DB setting not found
+ * @returns {Promise<*>} Setting value from DB or config.js
+ */
+export async function getSetting(env, key, configFallback = null) {
+  try {
+    // Check cache first
+    const cacheKey = `setting:${key}`;
+    const cached = systemSettingsCache.get(cacheKey);
+    if (cached !== null && cached !== undefined) return cached;
+    
+    // Then check database
+    const DB = env && (env.capi_db || env.CAPI_DB || env.DB);
+    if (DB) {
+      const res = await DB.prepare('SELECT value FROM system_settings WHERE key = ?').bind(key).all();
+      if (res.results && res.results.length > 0) {
+        const value = res.results[0].value;
+        systemSettingsCache.set(cacheKey, value, CACHE_CONFIG.SETTINGS_TTL_MS || 300000);
+        return value;
+      }
+    }
+  } catch (err) {
+    console.error(`Failed to get setting ${key} from DB:`, err);
+  }
+  
+  // Fall back to config.js value
+  return configFallback;
+}
+
+/**
+ * Get all plans from database with fallback to config defaults
+ * @param {Object} env - Cloudflare environment
+ * @returns {Promise<Array>} Array of plans with DB values preferred
+ */
+export async function getPlans(env) {
+  try {
+    const cacheKey = 'plans:all';
+    const cached = systemSettingsCache.get(cacheKey);
+    if (cached) return cached;
+    
+    const DB = env && (env.capi_db || env.CAPI_DB || env.DB);
+    if (DB) {
+      const res = await DB.prepare('SELECT * FROM plans ORDER BY name ASC').all();
+      if (res.results && res.results.length > 0) {
+        systemSettingsCache.set(cacheKey, res.results, CACHE_CONFIG.PLANS_TTL_MS || 600000);
+        return res.results;
+      }
+    }
+  } catch (err) {
+    console.error('Failed to fetch plans from DB:', err);
+  }
+  
+  // Fall back to config defaults
+  return DEFAULT_PLANS || [];
+}
+
+/**
+ * Get all methods from database with fallback to config defaults
+ * @param {Object} env - Cloudflare environment
+ * @returns {Promise<Array>} Array of methods with DB values preferred
+ */
+export async function getMethods(env) {
+  try {
+    const cacheKey = 'methods:all';
+    const cached = methodCache.get(cacheKey);
+    if (cached) return cached;
+    
+    const DB = env && (env.capi_db || env.CAPI_DB || env.DB);
+    if (DB) {
+      const res = await DB.prepare('SELECT * FROM methods WHERE enabled = 1 ORDER BY name ASC').all();
+      if (res.results && res.results.length > 0) {
+        methodCache.set(cacheKey, res.results, CACHE_CONFIG.METHODS_TTL_MS || 600000);
+        return res.results;
+      }
+    }
+  } catch (err) {
+    console.error('Failed to fetch methods from DB:', err);
+  }
+
+  // Sync/runtime source of truth is payload.js; keep config constants as final fallback only.
+  const payloadMethods = getPayloadMethods();
+  if (Array.isArray(payloadMethods) && payloadMethods.length > 0) {
+    methodCache.set('methods:all', payloadMethods, CACHE_CONFIG.METHODS_TTL_MS || 600000);
+    return payloadMethods;
+  }
+  
+  return DEFAULT_METHODS || [];
+}
+
+/**
+ * Invalidate all cached settings when updated
+ */
+export function invalidateSettingsCache() {
+  systemSettingsCache.clear();
+  methodCache.clear();
+}
 
 // ==================== IN-MEMORY CACHE LAYER ====================
 // Lightweight cache with TTL support for frequently accessed data

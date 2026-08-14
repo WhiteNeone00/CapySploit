@@ -3,8 +3,107 @@
 // ========================================
 // Centralized configuration file for all hardcoded values.
 // Modify here to change API behavior globally without touching business logic.
+// NOTE: Database system_settings is PRIMARY source; config.js is FALLBACK only
 
-// ==================== APP DEFAULTS & FALLBACKS ====================
+// ==================== DEFAULT PLANS & METHODS ====================
+// Fallback values when database is unavailable or empty
+// PRIMARY source: system_settings table in D1 database
+
+export const DEFAULT_PLANS = [
+  {
+    name: 'Default',
+    description: 'Basic plan',
+    price: 0,
+    max_time: 60,
+    cooldown: 10,
+    max_concurrents: 1,
+    max_daily_attacks: 100,
+    api: 1,
+    raw_access: 0,
+    star_access: 0,
+    private_access: 0,
+    bypass_power: 0,
+    bypass_anti_spam: 0,
+    bypass_blacklist: 0,
+    vip: 0,
+    holder: 0,
+    reseller: 0
+  },
+  {
+    name: 'VIP',
+    description: 'Premium plan with extended limits',
+    price: 10,
+    max_time: 300,
+    cooldown: 5,
+    max_concurrents: 3,
+    max_daily_attacks: 500,
+    api: 1,
+    raw_access: 0,
+    star_access: 0,
+    private_access: 0,
+    bypass_power: 0,
+    bypass_anti_spam: 0,
+    bypass_blacklist: 0,
+    vip: 1,
+    holder: 0,
+    reseller: 0
+  },
+  {
+    name: 'Holder',
+    description: 'High-tier plan for power users',
+    price: 20,
+    max_time: 500,
+    cooldown: 3,
+    max_concurrents: 5,
+    max_daily_attacks: 1000,
+    api: 1,
+    raw_access: 1,
+    star_access: 0,
+    private_access: 0,
+    bypass_power: 0,
+    bypass_anti_spam: 0,
+    bypass_blacklist: 0,
+    vip: 0,
+    holder: 1,
+    reseller: 0
+  },
+  {
+    name: 'Raw',
+    description: 'Unlimited access tier',
+    price: 50,
+    max_time: 9999,
+    cooldown: 1,
+    max_concurrents: 99,
+    max_daily_attacks: 99999,
+    api: 1,
+    raw_access: 1,
+    star_access: 1,
+    private_access: 1,
+    bypass_power: 1,
+    bypass_anti_spam: 1,
+    bypass_blacklist: 1,
+    vip: 1,
+    holder: 1,
+    reseller: 0
+  }
+];
+
+export const DEFAULT_METHODS = [
+  { name: 'udp', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 80 },
+  { name: 'tcp', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 80 },
+  { name: 'http', enabled: 1, target_type: 'url', max_slots: 8, default_port: 80 },
+  { name: 'https', enabled: 1, target_type: 'url', max_slots: 8, default_port: 443 },
+  { name: 'cf-bypass', enabled: 1, target_type: 'url', max_slots: 5, default_port: 443 },
+  { name: 'slowloris', enabled: 1, target_type: 'url', max_slots: 3, default_port: 80 },
+  { name: 'http-raw', enabled: 1, target_type: 'url', max_slots: 8, default_port: 80 },
+  { name: 'https-raw', enabled: 1, target_type: 'url', max_slots: 8, default_port: 443 },
+  { name: 'tcp-flood', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 80 },
+  { name: 'udp-flood', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 53 },
+  { name: 'icmp', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 0 },
+  { name: 'syn', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 80 }
+];
+
+// ==================== APP DEFAULTS & FALLBACKS ===================="
 export const APP_DEFAULTS = {
   SERVICE_NAME: 'CAPI',
   SRC_NAME: 'CapySploit',
@@ -109,10 +208,12 @@ export const PAGINATION_CONFIG = {
 // ==================== CACHE CONFIGURATION ====================
 export const CACHE_CONFIG = {
   ENABLED: true,
-  DEFAULT_TTL_MS: 60000,           // 60 seconds default
-  USER_TTL_MS: 15000,              // 15 seconds for user metadata (5-30s range)
-  METHOD_TTL_MS: 300000,           // 5 minutes for method/role lists (1-5 min range)
-  SETTING_TTL_MS: 600000,          // 10 minutes for system settings (1-10 min range)
+  DEFAULT_TTL_MS: 300000,          // 5 minutes default
+  USER_TTL_MS: 600000,             // 10 minutes for user metadata
+  METHODS_TTL_MS: 600000,          // 10 minutes for method lists
+  PLANS_TTL_MS: 600000,            // 10 minutes for plan data
+  SETTINGS_TTL_MS: 300000,         // 5 minutes for system settings
+  STATS_TTL_MS: 60000,             // 1 minute for stats
   CLEANUP_INTERVAL_MS: 60000       // Run cleanup every 60 seconds
 };
 

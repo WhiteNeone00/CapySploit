@@ -119,6 +119,27 @@ test('view plan payload omits min_time from user-facing output', async () => {
   assert.ok(payload.data.max_time === 60);
 });
 
+test('method metadata keeps the current field names and max_time semantics', async () => {
+  const method = {
+    name: 'udp',
+    default_access: 1,
+    vip: 1,
+    reseller: 1,
+    admin: 1,
+    max_time: null,
+    raw_access: 1,
+    star_access: 0,
+    private_access: 0
+  };
+
+  assert.equal(method.default_access, 1);
+  assert.equal(method.vip, 1);
+  assert.equal(method.max_time, null);
+  assert.ok(['0', '1'].includes(String(method.raw_access)));
+  assert.ok(!('default_user' in method));
+  assert.ok(!('vip_user' in method));
+});
+
 test('keeps tips and ads at the bottom and uses a custom service name', async () => {
   const response = jsonResponse({ error: false, online_users_count: 1 }, 200, { service: 'ResellerX' });
   const body = await response.json();

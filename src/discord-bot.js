@@ -1305,7 +1305,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     const profile = profilePayload.data.profile;
-    if (!profile.api_access) {
+    if (!(profile.api ?? profile.api_access)) {
       await interaction.editReply({ content: 'Your account does not have API access enabled.' });
       return;
     }

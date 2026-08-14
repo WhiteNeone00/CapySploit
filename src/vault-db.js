@@ -42,8 +42,17 @@ async function ensureSystemSettings(env) {
     { key: 'rate_limit_enabled', value: 'true', type: 'boolean', description: 'Global rate limit toggle' },
     { key: 'max_concurrent_attacks', value: '50', type: 'number', description: 'Max concurrent attacks globally' },
     { key: 'max_user_concurrent_attacks', value: '3', type: 'number', description: 'Max concurrent attacks per user' },
+    { key: 'auto_cleanup_enabled', value: 'true', type: 'boolean', description: 'Enable automatic cleanup jobs' },
+    { key: 'auto_cleanup_interval_ms', value: '300000', type: 'number', description: 'Automatic cleanup interval in milliseconds' },
     { key: 'default_user_plan', value: 'Default', type: 'string', description: 'Default user plan' },
-    { key: 'api_version', value: '1.0.0', type: 'string', description: 'API version' }
+    { key: 'api_version', value: '1.0.0', type: 'string', description: 'API version' },
+    { key: 'default_max_time', value: '60', type: 'number', description: 'Default max attack time in seconds' },
+    { key: 'default_cooldown', value: '10', type: 'number', description: 'Default cooldown between attacks' },
+    { key: 'default_max_concurrents', value: '1', type: 'number', description: 'Default max concurrent attacks per user' },
+    { key: 'default_max_daily_attacks', value: '100', type: 'number', description: 'Default max attacks per day' },
+    { key: 'enable_power_saving', value: 'true', type: 'boolean', description: 'Enable power saving mode by default' },
+    { key: 'enable_anti_spam', value: 'true', type: 'boolean', description: 'Enable anti-spam protection by default' },
+    { key: 'enable_bypass_blacklist', value: 'false', type: 'boolean', description: 'Allow bypass of blacklist by default' }
   ];
 
   for (const item of defaults) {
@@ -66,23 +75,44 @@ export async function ensureTables(env) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE,
       description TEXT,
+      price REAL DEFAULT 0,
       max_time INTEGER DEFAULT 60,
       cooldown INTEGER DEFAULT 10,
       max_concurrents INTEGER DEFAULT 1,
-      days_active INTEGER DEFAULT 5,
       max_daily_attacks INTEGER DEFAULT 100,
-      api_access INTEGER DEFAULT 0,
+      api INTEGER DEFAULT 0,
+      raw_access INTEGER DEFAULT 0,
+      star_access INTEGER DEFAULT 0,
+      private_access INTEGER DEFAULT 0,
       bypass_power INTEGER DEFAULT 0,
       bypass_anti_spam INTEGER DEFAULT 0,
       bypass_blacklist INTEGER DEFAULT 0,
-      vip_access INTEGER DEFAULT 0,
-      holder_access INTEGER DEFAULT 0,
-      reseller_access INTEGER DEFAULT 0,
-      private_access INTEGER DEFAULT 0,
+      vip INTEGER DEFAULT 0,
+      holder INTEGER DEFAULT 0,
+      reseller INTEGER DEFAULT 0,
       permissions TEXT DEFAULT '{}',
       created_at TEXT,
       updated_at TEXT
     )`).run();
+    
+    // Seed default plans if table is empty
+    const plansCheck = await DB.prepare('SELECT COUNT(*) AS c FROM plans').all();
+    if (!plansCheck.results || plansCheck.results[0]?.c === 0) {
+      const defaultPlans = [
+        { name: 'Default', description: 'Basic plan', price: 0, max_time: 60, cooldown: 10, max_concurrents: 1, max_daily_attacks: 100, api: 1, vip: 0, holder: 0 },
+        { name: 'VIP', description: 'Premium plan', price: 10, max_time: 300, cooldown: 5, max_concurrents: 3, max_daily_attacks: 500, api: 1, vip: 1, holder: 0 },
+        { name: 'Holder', description: 'High-tier plan', price: 20, max_time: 500, cooldown: 3, max_concurrents: 5, max_daily_attacks: 1000, api: 1, raw_access: 1, vip: 0, holder: 1 },
+        { name: 'Raw', description: 'Unlimited access', price: 50, max_time: 9999, cooldown: 1, max_concurrents: 99, max_daily_attacks: 99999, api: 1, raw_access: 1, star_access: 1, vip: 1, holder: 1 }
+      ];
+      for (const plan of defaultPlans) {
+        await DB.prepare(
+          'INSERT INTO plans (name, description, price, max_time, cooldown, max_concurrents, max_daily_attacks, api, raw_access, star_access, vip, holder, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(
+          plan.name, plan.description, plan.price, plan.max_time, plan.cooldown, plan.max_concurrents, plan.max_daily_attacks,
+          plan.api, plan.raw_access || 0, plan.star_access || 0, plan.vip, plan.holder, new Date().toISOString()
+        ).run();
+      }
+    }
 
     await DB.prepare(`CREATE TABLE IF NOT EXISTS users (
       username TEXT PRIMARY KEY,
@@ -91,7 +121,7 @@ export async function ensureTables(env) {
       reseller INTEGER DEFAULT 0,
       vip INTEGER DEFAULT 0,
       holder INTEGER DEFAULT 0,
-      api_access INTEGER DEFAULT 0,
+      api INTEGER DEFAULT 0,
       plan_id INTEGER,
       max_time INTEGER DEFAULT 60,
       cooldown INTEGER DEFAULT 10,
@@ -108,6 +138,9 @@ export async function ensureTables(env) {
       power_saving INTEGER DEFAULT 1,
       bypass_anti_spam INTEGER DEFAULT 0,
       bypass_blacklist INTEGER DEFAULT 0,
+      raw_access INTEGER DEFAULT 0,
+      star_access INTEGER DEFAULT 0,
+      private_access INTEGER DEFAULT 0,
       expires_at TEXT,
       last_ip TEXT,
       whitelisted_ip TEXT,
@@ -130,14 +163,47 @@ export async function ensureTables(env) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE,
       description TEXT,
-      default_user INTEGER DEFAULT 0,
-      vip_user INTEGER DEFAULT 1,
+      enabled INTEGER DEFAULT 1,
+      target_type TEXT DEFAULT 'ip',
+      default_access INTEGER DEFAULT 0,
+      vip INTEGER DEFAULT 1,
       reseller INTEGER DEFAULT 1,
       admin INTEGER DEFAULT 1,
       max_slots INTEGER DEFAULT 0,
+      default_port INTEGER DEFAULT 80,
+      max_time INTEGER,
+      raw_access INTEGER DEFAULT 0,
+      star_access INTEGER DEFAULT 0,
+      private_access INTEGER DEFAULT 0,
       created_at TEXT,
       updated_at TEXT
     )`).run();
+    
+    // Seed default methods if table is empty
+    const methodsCheck = await DB.prepare('SELECT COUNT(*) AS c FROM methods').all();
+    if (!methodsCheck.results || methodsCheck.results[0]?.c === 0) {
+      const defaultMethods = [
+        { name: 'udp', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 80 },
+        { name: 'tcp', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 80 },
+        { name: 'http', enabled: 1, target_type: 'url', max_slots: 8, default_port: 80 },
+        { name: 'https', enabled: 1, target_type: 'url', max_slots: 8, default_port: 443 },
+        { name: 'cf-bypass', enabled: 1, target_type: 'url', max_slots: 5, default_port: 443 },
+        { name: 'slowloris', enabled: 1, target_type: 'url', max_slots: 3, default_port: 80 },
+        { name: 'http-raw', enabled: 1, target_type: 'url', max_slots: 8, default_port: 80 },
+        { name: 'https-raw', enabled: 1, target_type: 'url', max_slots: 8, default_port: 443 },
+        { name: 'tcp-flood', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 80 },
+        { name: 'udp-flood', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 53 },
+        { name: 'icmp', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 0 },
+        { name: 'syn', enabled: 1, target_type: 'ip', max_slots: 10, default_port: 80 }
+      ];
+      for (const method of defaultMethods) {
+        await DB.prepare(
+          'INSERT INTO methods (name, enabled, target_type, max_slots, default_port, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        ).bind(
+          method.name, method.enabled, method.target_type, method.max_slots, method.default_port, new Date().toISOString()
+        ).run();
+      }
+    }
 
     await DB.prepare(`CREATE TABLE IF NOT EXISTS blacklist (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -183,16 +249,79 @@ export async function ensureTables(env) {
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN plan_id INTEGER');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN last_ip TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN whitelisted_ip TEXT');
+    await addColumn(DB, 'ALTER TABLE users ADD COLUMN raw_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE users ADD COLUMN star_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE users ADD COLUMN private_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN expires_at TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN warning_count INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN warning_reset_at TEXT');
+    await addColumn(DB, 'ALTER TABLE users ADD COLUMN api INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN price REAL DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN raw_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN star_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN bypass_power INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN bypass_anti_spam INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN bypass_blacklist INTEGER DEFAULT 0');
-    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN vip_access INTEGER DEFAULT 0');
-    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN holder_access INTEGER DEFAULT 0');
-    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN reseller_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN api INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN vip INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN holder INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN reseller INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN private_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN max_time INTEGER');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN raw_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN star_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN private_access INTEGER DEFAULT 0');
+
+    try {
+      const userColumns = await DB.prepare('PRAGMA table_info(users)').all();
+      const userColumnNames = (userColumns?.results || []).map((col) => col.name);
+      if (userColumnNames.includes('api_access') && !userColumnNames.includes('api')) {
+        await DB.prepare('ALTER TABLE users RENAME COLUMN api_access TO api').run();
+      }
+      if (userColumnNames.includes('price')) {
+        try { await DB.prepare('ALTER TABLE users DROP COLUMN price').run(); } catch (error) {}
+      }
+    } catch (error) {}
+
+    try {
+      const planColumns = await DB.prepare('PRAGMA table_info(plans)').all();
+      const planColumnNames = (planColumns?.results || []).map((col) => col.name);
+      if (planColumnNames.includes('api_access') && !planColumnNames.includes('api')) {
+        await DB.prepare('ALTER TABLE plans RENAME COLUMN api_access TO api').run();
+      }
+      if (planColumnNames.includes('vip_access') && !planColumnNames.includes('vip')) {
+        await DB.prepare('ALTER TABLE plans RENAME COLUMN vip_access TO vip').run();
+      }
+      if (planColumnNames.includes('holder_access') && !planColumnNames.includes('holder')) {
+        await DB.prepare('ALTER TABLE plans RENAME COLUMN holder_access TO holder').run();
+      }
+      if (planColumnNames.includes('reseller_access') && !planColumnNames.includes('reseller')) {
+        await DB.prepare('ALTER TABLE plans RENAME COLUMN reseller_access TO reseller').run();
+      }
+    } catch (error) {}
+
+    try {
+      const methodColumns = await DB.prepare('PRAGMA table_info(methods)').all();
+      const methodColumnNames = (methodColumns?.results || []).map((col) => col.name);
+      if (methodColumnNames.includes('default_user') && !methodColumnNames.includes('default_access')) {
+        await DB.prepare('ALTER TABLE methods RENAME COLUMN default_user TO default_access').run();
+      }
+      if (methodColumnNames.includes('vip_user') && !methodColumnNames.includes('vip')) {
+        await DB.prepare('ALTER TABLE methods RENAME COLUMN vip_user TO vip').run();
+      }
+      if (!methodColumnNames.includes('max_time')) {
+        await addColumn(DB, 'ALTER TABLE methods ADD COLUMN max_time INTEGER');
+      }
+      if (!methodColumnNames.includes('raw_access')) {
+        await addColumn(DB, 'ALTER TABLE methods ADD COLUMN raw_access INTEGER DEFAULT 0');
+      }
+      if (!methodColumnNames.includes('star_access')) {
+        await addColumn(DB, 'ALTER TABLE methods ADD COLUMN star_access INTEGER DEFAULT 0');
+      }
+      if (!methodColumnNames.includes('private_access')) {
+        await addColumn(DB, 'ALTER TABLE methods ADD COLUMN private_access INTEGER DEFAULT 0');
+      }
+    } catch (error) {}
 
     await ensureSystemSettings(env);
   } catch (error) {
@@ -229,17 +358,18 @@ export async function saveUser(env, user) {
   const DB = getDB(env);
   if (!DB) return;
   const now = new Date().toISOString();
+  const apiValue = user.api ?? user.api_access ?? 0;
   try {
     await DB.prepare(`INSERT OR REPLACE INTO users (
-      username,password,admin,reseller,vip,holder,api_access,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,power_saving,bypass_anti_spam,bypass_blacklist,expires_at,last_ip,whitelisted_ip,warning_count,warning_reset_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+      username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,private_access,expires_at,last_ip,whitelisted_ip,warning_count,warning_reset_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
       user.username,
       user.password,
       user.admin ? 1 : 0,
       user.reseller ? 1 : 0,
       user.vip ? 1 : 0,
       user.holder ? 1 : 0,
-      user.api_access ? 1 : 0,
+      apiValue ? 1 : 0,
       user.plan_id ?? null,
       user.max_time ?? 60,
       user.cooldown ?? 10,
@@ -256,6 +386,9 @@ export async function saveUser(env, user) {
       user.power_saving !== undefined ? (user.power_saving ? 1 : 0) : 1,
       user.bypass_anti_spam ? 1 : 0,
       user.bypass_blacklist ? 1 : 0,
+      user.raw_access ? 1 : 0,
+      user.star_access ? 1 : 0,
+      user.private_access ? 1 : 0,
       user.expires_at || null,
       user.last_ip || null,
       user.whitelisted_ip || null,
@@ -277,7 +410,7 @@ export async function deleteUser(env, username) {
 export async function listUsers(env) {
   const DB = getDB(env);
   if (!DB) return [];
-  const res = await DB.prepare('SELECT username,admin,vip,reseller,holder,api_access,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,expiry_unix,bypass_slots,suspended,last_request_time,last_ip,whitelisted_ip,warning_count,warning_reset_at FROM users').all();
+  const res = await DB.prepare('SELECT username,admin,vip,reseller,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,expiry_unix,bypass_slots,suspended,last_request_time,last_ip,whitelisted_ip,raw_access,star_access,private_access,warning_count,warning_reset_at FROM users').all();
   return res.results || [];
 }
 
@@ -414,6 +547,10 @@ export async function cleanupOngoing(env) {
   if (!DB) return { updated: 0, deleted: 0 };
 
   try {
+    const cleanupSetting = await getSystemSetting(env, 'auto_cleanup_enabled');
+    if (cleanupSetting && cleanupSetting.value === 'false') {
+      return { updated: 0, deleted: 0, disabled_by_system_setting: true };
+    }
     const updated = await DB.prepare("UPDATE ongoing_attacks SET status='finished' WHERE status='running' AND datetime(expires_at) <= datetime('now')").run();
     const expired = await DB.prepare("DELETE FROM ongoing_attacks WHERE status='finished' AND datetime(expires_at) < datetime('now', '-7 days')").run();
     const stalePending = await DB.prepare("DELETE FROM ongoing_attacks WHERE status='pending' AND datetime(started_at) < datetime('now', '-1 day')").run();
@@ -483,13 +620,32 @@ export async function addMethod(env, method) {
   if (!DB) return;
   const name = (method.name || method).toLowerCase().trim();
   const description = method.description || `${name} method`;
-  await DB.prepare('INSERT OR IGNORE INTO methods (name, description, created_at) VALUES (?, ?, ?)').bind(name, description, new Date().toISOString()).run();
+  const maxTime = method.max_time === undefined || method.max_time === null || method.max_time === '' ? null : Number(method.max_time);
+  const defaultAccess = method.default_access ?? method.default_user ?? 0;
+  const vipAccess = method.vip ?? method.vip_user ?? 1;
+  const rawAccess = method.raw_access ?? 0;
+  const starAccess = method.star_access ?? 0;
+  const privateAccess = method.private_access ?? 0;
+  await DB.prepare('INSERT OR IGNORE INTO methods (name, description, default_access, vip, reseller, admin, max_slots, max_time, raw_access, star_access, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(
+    name,
+    description,
+    Number(defaultAccess) ? 1 : 0,
+    Number(vipAccess) ? 1 : 0,
+    Number(method.reseller ?? 1) ? 1 : 0,
+    Number(method.admin ?? 1) ? 1 : 0,
+    Number(method.max_slots ?? 0) || 0,
+    maxTime,
+    Number(rawAccess) ? 1 : 0,
+    Number(starAccess) ? 1 : 0,
+    Number(privateAccess) ? 1 : 0,
+    new Date().toISOString()
+  ).run();
 }
 
 export async function listMethods(env) {
   const DB = getDB(env);
   if (!DB) return [];
-  const res = await DB.prepare('SELECT id, name, description, created_at FROM methods ORDER BY name ASC').all();
+  const res = await DB.prepare('SELECT id, name, description, default_access, vip, reseller, admin, max_slots, max_time, raw_access, star_access, private_access, created_at FROM methods ORDER BY name ASC').all();
   return res.results || [];
 }
 
@@ -570,7 +726,7 @@ export async function countLogsToday(env) {
 export async function countUsersByFlag(env, flag) {
   const DB = getDB(env);
   if (!DB) return 0;
-  if (!['vip', 'holder', 'reseller', 'api_access', 'suspended'].includes(flag)) return 0;
+  if (!['vip', 'holder', 'reseller', 'api', 'suspended'].includes(flag)) return 0;
   const res = await DB.prepare(`SELECT COUNT(*) AS c FROM users WHERE ${flag} = 1`).all();
   return Number(res?.results?.[0]?.c || 0);
 }
@@ -666,11 +822,11 @@ export async function createPlan(env, plan) {
     Max_Concurrents: readNumber(payload.max_concurrents ?? payload.Max_Concurrents, 1),
     DaysActive: readNumber(payload.days_active ?? payload.DaysActive, 5),
     MaxDailyAttacks: readNumber(payload.max_daily_attacks ?? payload.MaxDailyAttacks, 100),
-    Api_Acces: Boolean(payload.api_access ?? payload.Api_Acces ?? false),
+    Api: Boolean(payload.api ?? payload.api_access ?? payload.Api ?? payload.Api_Acces ?? false),
     Permissions: normalizePermissions(payload.permissions || payload.Permissions || {})
   });
 
-  await DB.prepare(`INSERT INTO plans (name, description, max_time, cooldown, max_concurrents, days_active, max_daily_attacks, api_access, permissions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+  await DB.prepare(`INSERT INTO plans (name, description, max_time, cooldown, max_concurrents, days_active, max_daily_attacks, api, permissions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
     payload.name || payload.Name || 'Custom',
     payload.description || payload.Description || '',
     readNumber(payload.max_time ?? payload.Max_Times, 60),
@@ -678,7 +834,7 @@ export async function createPlan(env, plan) {
     readNumber(payload.max_concurrents ?? payload.Max_Concurrents, 1),
     readNumber(payload.days_active ?? payload.DaysActive, 5),
     readNumber(payload.max_daily_attacks ?? payload.MaxDailyAttacks, 100),
-    Boolean(payload.api_access ?? payload.Api_Acces ?? false) ? 1 : 0,
+    Boolean(payload.api ?? payload.api_access ?? payload.Api ?? payload.Api_Acces ?? false) ? 1 : 0,
     permissions,
     createdAt
   ).run();
@@ -722,9 +878,9 @@ export async function updatePlan(env, planName, updates = {}) {
       fields.push('max_daily_attacks = ?');
       values.push(readNumber(normalized.max_daily_attacks ?? normalized.MaxDailyAttacks, 100));
     }
-    if (normalized.api_access !== undefined || normalized.Api_Acces !== undefined) {
-      fields.push('api_access = ?');
-      values.push(Boolean(normalized.api_access ?? normalized.Api_Acces ?? false) ? 1 : 0);
+    if (normalized.api !== undefined || normalized.api_access !== undefined || normalized.Api !== undefined || normalized.Api_Acces !== undefined) {
+      fields.push('api = ?');
+      values.push(Boolean(normalized.api ?? normalized.api_access ?? normalized.Api ?? normalized.Api_Acces ?? false) ? 1 : 0);
     }
     if (normalized.permissions !== undefined || normalized.Permissions !== undefined) {
       fields.push('permissions = ?');
@@ -755,7 +911,7 @@ export async function resolveUserPlanSettings(env, user) {
       max_concurrents: 1,
       days_active: 5,
       max_daily_attacks: 100,
-      api_access: 0,
+      api: 0,
       permissions: {}
     };
   }
@@ -788,13 +944,13 @@ export async function resolveUserPlanSettings(env, user) {
     max_concurrents: readNumber(effectivePlan.max_concurrents ?? userRecord.max_concurrents ?? 1, 1),
     days_active: readNumber(effectivePlan.days_active ?? 5, 5),
     max_daily_attacks: readNumber(effectivePlan.max_daily_attacks ?? userRecord.max_daily_attacks ?? 100, 100),
-    api_access: Boolean(effectivePlan.api_access ?? userRecord.api_access ?? false) ? 1 : 0,
+    api: Boolean(effectivePlan.api ?? effectivePlan.api_access ?? userRecord.api ?? userRecord.api_access ?? false) ? 1 : 0,
     bypass_power: Boolean(effectivePlan.bypass_power ?? 0) ? 1 : 0,
     bypass_anti_spam: Boolean(effectivePlan.bypass_anti_spam ?? userRecord.bypass_anti_spam ?? 0) ? 1 : 0,
     bypass_blacklist: Boolean(effectivePlan.bypass_blacklist ?? userRecord.bypass_blacklist ?? 0) ? 1 : 0,
-    vip_access: Boolean(effectivePlan.vip_access ?? 0) ? 1 : 0,
-    holder_access: Boolean(effectivePlan.holder_access ?? 0) ? 1 : 0,
-    reseller_access: Boolean(effectivePlan.reseller_access ?? 0) ? 1 : 0,
+    vip: Boolean(effectivePlan.vip ?? effectivePlan.vip_access ?? 0) ? 1 : 0,
+    holder: Boolean(effectivePlan.holder ?? effectivePlan.holder_access ?? 0) ? 1 : 0,
+    reseller: Boolean(effectivePlan.reseller ?? effectivePlan.reseller_access ?? 0) ? 1 : 0,
     private_access: Boolean(effectivePlan.private_access ?? 0) ? 1 : 0,
     permissions,
     description: effectivePlan.description || ''
@@ -816,7 +972,7 @@ export async function applyPlanToUser(env, username, planName) {
     cooldown: readNumber(plan.cooldown ?? user.cooldown ?? 10, 10),
     max_concurrents: readNumber(plan.max_concurrents ?? user.max_concurrents ?? 1, 1),
     max_daily_attacks: readNumber(plan.max_daily_attacks ?? user.max_daily_attacks ?? 100, 100),
-    api_access: Boolean(plan.api_access ?? user.api_access ?? false) ? 1 : 0,
+    api: Boolean(plan.api ?? plan.api_access ?? user.api ?? user.api_access ?? false) ? 1 : 0,
     bypass_anti_spam: Boolean(plan.bypass_anti_spam ?? user.bypass_anti_spam ?? 0) ? 1 : 0,
     bypass_blacklist: Boolean(plan.bypass_blacklist ?? user.bypass_blacklist ?? 0) ? 1 : 0
   };
@@ -838,25 +994,16 @@ export async function seedPlans(env) {
           max_time: 60,
           cooldown: 10,
           max_concurrents: 1,
-          days_active: 5,
           max_daily_attacks: 100,
-          api_access: false,
-          bypass_power: false,
-          bypass_anti_spam: false,
-          bypass_blacklist: false,
-          vip_access: false,
-          holder_access: false,
-          reseller_access: false,
-          private_access: false,
-          permissions: {
-            Private_Acces: false,
-            Bypass_PowerSaving: false,
-            Reseller_Acces: false,
-            Bypass_Blacklist: false,
-            VIP_Acces: false,
-            Holder_Acces: false,
-            custom_roles: { enabled: false, roles: [{ role_name: 'main_network' }] }
-          }
+          api: 0,
+          bypass_power: 0,
+          bypass_anti_spam: 0,
+          bypass_blacklist: 0,
+          vip: 0,
+          holder: 0,
+          reseller: 0,
+          private_access: 0,
+          price: 0
         },
         {
           name: 'VIP',
@@ -864,25 +1011,16 @@ export async function seedPlans(env) {
           max_time: 120,
           cooldown: 30,
           max_concurrents: 1,
-          days_active: 31,
           max_daily_attacks: 250,
-          api_access: false,
-          bypass_power: false,
-          bypass_anti_spam: false,
-          bypass_blacklist: false,
-          vip_access: true,
-          holder_access: false,
-          reseller_access: false,
-          private_access: false,
-          permissions: {
-            Private_Acces: false,
-            Bypass_PowerSaving: false,
-            Bypass_Blacklist: false,
-            Reseller_Acces: false,
-            VIP_Acces: true,
-            Holder_Acces: false,
-            custom_roles: { enabled: false, roles: [{ role_name: 'main_network' }] }
-          }
+          api: 0,
+          bypass_power: 0,
+          bypass_anti_spam: 0,
+          bypass_blacklist: 0,
+          vip: 1,
+          holder: 0,
+          reseller: 0,
+          private_access: 0,
+          price: 0
         },
         {
           name: 'API',
@@ -890,46 +1028,36 @@ export async function seedPlans(env) {
           max_time: 300,
           cooldown: 10,
           max_concurrents: 2,
-          days_active: 31,
           max_daily_attacks: 500,
-          api_access: true,
-          bypass_power: false,
-          bypass_anti_spam: false,
-          bypass_blacklist: false,
-          vip_access: true,
-          holder_access: false,
-          reseller_access: false,
-          private_access: false,
-          permissions: {
-            Private_Acces: false,
-            Bypass_PowerSaving: false,
-            Bypass_Blacklist: false,
-            Reseller_Acces: false,
-            VIP_Acces: true,
-            Holder_Acces: false,
-            custom_roles: { enabled: false, roles: [{ role_name: 'main_network' }] }
-          }
+          api: 1,
+          bypass_power: 0,
+          bypass_anti_spam: 0,
+          bypass_blacklist: 0,
+          vip: 1,
+          holder: 0,
+          reseller: 0,
+          private_access: 0,
+          price: 0
         }
       ];
 
       for (const plan of defaultPlans) {
-        await DB.prepare('INSERT OR IGNORE INTO plans (name, description, max_time, cooldown, max_concurrents, days_active, max_daily_attacks, api_access, bypass_power, bypass_anti_spam, bypass_blacklist, vip_access, holder_access, reseller_access, private_access, permissions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(
+        await DB.prepare('INSERT OR IGNORE INTO plans (name, description, price, max_time, cooldown, max_concurrents, max_daily_attacks, api, bypass_power, bypass_anti_spam, bypass_blacklist, vip, holder, reseller, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(
           plan.name,
           plan.description,
-          plan.max_time || 60,
-          plan.cooldown || 10,
-          plan.max_concurrents || 1,
-          plan.days_active || 5,
-          plan.max_daily_attacks || 100,
-          plan.api_access ? 1 : 0,
-          plan.bypass_power ? 1 : 0,
-          plan.bypass_anti_spam ? 1 : 0,
-          plan.bypass_blacklist ? 1 : 0,
-          plan.vip_access ? 1 : 0,
-          plan.holder_access ? 1 : 0,
-          plan.reseller_access ? 1 : 0,
-          plan.private_access ? 1 : 0,
-          JSON.stringify(plan.permissions || {}),
+          Number(plan.price || 0),
+          Number(plan.max_time || 60),
+          Number(plan.cooldown || 10),
+          Number(plan.max_concurrents || 1),
+          Number(plan.max_daily_attacks || 100),
+          Number(plan.api || 0),
+          Number(plan.bypass_power || 0),
+          Number(plan.bypass_anti_spam || 0),
+          Number(plan.bypass_blacklist || 0),
+          Number(plan.vip || 0),
+          Number(plan.holder || 0),
+          Number(plan.reseller || 0),
+          Number(plan.private_access || 0),
           new Date().toISOString()
         ).run();
       }
@@ -954,7 +1082,7 @@ export async function seedRootUser(env) {
         reseller: 0,
         vip: 1,
         holder: 1,
-        api_access: 1,
+        api: 1,
         max_time: 500,
         cooldown: 10,
         max_concurrents: 3,
@@ -975,13 +1103,87 @@ export async function seedMethods(env) {
   try {
     const count = await DB.prepare('SELECT COUNT(*) AS c FROM methods').all();
     if ((count?.results?.[0]?.c || 0) === 0) {
-      const defaults = (DEFAULT_PAYLOAD.methods || []).map((item) => [item.name, item.description || `${item.name} method`]);
-      for (const [name, description] of defaults) {
-        await DB.prepare('INSERT OR IGNORE INTO methods (name, description, created_at) VALUES (?, ?, ?)').bind(name, description, new Date().toISOString()).run();
-      }
+      await syncMethodsFromPayload(env);
     }
   } catch (error) {
     console.error('seedMethods error:', error.message);
+  }
+}
+
+export async function syncMethodsFromPayload(env) {
+  const DB = getDB(env);
+  if (!DB) return { added: 0, updated: 0, error: null };
+
+  try {
+    const payloadMethods = (DEFAULT_PAYLOAD.methods || []);
+    const existing = await DB.prepare('SELECT name FROM methods').all();
+    const existingNames = new Set((existing?.results || []).map(m => m.name?.toLowerCase()));
+
+    let added = 0;
+    let updated = 0;
+
+    for (const item of payloadMethods) {
+      const name = (item.name || '').toLowerCase().trim();
+      if (!name) continue;
+
+      const normalized = {
+        name,
+        description: item.description || `${name} method`,
+        default_access: Number(item.default_access ?? 0),
+        vip: Number(item.vip ?? 1),
+        reseller: Number(item.reseller ?? 1),
+        admin: Number(item.admin ?? 1),
+        max_slots: Number(item.max_slots ?? item.max_concurrents ?? 0),
+        max_time: item.max_time === undefined || item.max_time === null || item.max_time === '' ? null : Number(item.max_time),
+        raw_access: Number(item.raw_access ?? 0),
+        star_access: Number(item.star_access ?? 0),
+        private_access: Number(item.private_access ?? 0)
+      };
+
+      if (!existingNames.has(name)) {
+        await DB.prepare(
+          'INSERT INTO methods (name, description, default_access, vip, reseller, admin, max_slots, max_time, raw_access, star_access, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(
+          normalized.name,
+          normalized.description,
+          normalized.default_access ? 1 : 0,
+          normalized.vip ? 1 : 0,
+          normalized.reseller ? 1 : 0,
+          normalized.admin ? 1 : 0,
+          normalized.max_slots || 0,
+          normalized.max_time,
+          normalized.raw_access ? 1 : 0,
+          normalized.star_access ? 1 : 0,
+          normalized.private_access ? 1 : 0,
+          new Date().toISOString()
+        ).run();
+        added++;
+        existingNames.add(name);
+      } else {
+        await DB.prepare(
+          'UPDATE methods SET description = ?, default_access = ?, vip = ?, reseller = ?, admin = ?, max_slots = ?, max_time = ?, raw_access = ?, star_access = ?, private_access = ?, updated_at = ? WHERE name = ?'
+        ).bind(
+          normalized.description,
+          normalized.default_access ? 1 : 0,
+          normalized.vip ? 1 : 0,
+          normalized.reseller ? 1 : 0,
+          normalized.admin ? 1 : 0,
+          normalized.max_slots || 0,
+          normalized.max_time,
+          normalized.raw_access ? 1 : 0,
+          normalized.star_access ? 1 : 0,
+          normalized.private_access ? 1 : 0,
+          new Date().toISOString(),
+          normalized.name
+        ).run();
+        updated++;
+      }
+    }
+
+    return { added, updated, error: null };
+  } catch (error) {
+    console.error('syncMethodsFromPayload error:', error.message);
+    return { added: 0, updated: 0, error: error.message };
   }
 }
 
@@ -1005,25 +1207,35 @@ export async function initializeDatabase(env) {
   const DB = getDB(env);
   if (!DB) return;
 
-  await ensureTables(env);
-  await cleanupOngoing(env);
+  try {
+    await ensureTables(env);
+    await cleanupOngoing(env);
 
-  await seedPlans(env);
-  await seedMethods(env);
-  await seedBlacklist(env);
-  await seedRootUser(env);
+    await seedPlans(env);
+    await seedMethods(env);
+    await syncMethodsFromPayload(env);
+    await seedBlacklist(env);
+    await seedRootUser(env);
 
-  const settings = [
-    { key: 'maintenance_mode', value: 'false', type: 'boolean', description: 'API maintenance mode' },
-    { key: 'rate_limit_enabled', value: 'true', type: 'boolean', description: 'Global rate limit toggle' },
-    { key: 'max_concurrent_attacks', value: '50', type: 'number', description: 'Max concurrent attacks globally' },
-    { key: 'max_user_concurrent_attacks', value: '3', type: 'number', description: 'Max concurrent attacks per user' },
-    { key: 'default_user_plan', value: 'Default', type: 'string', description: 'Default user plan' },
-    { key: 'api_version', value: '1.0.0', type: 'string', description: 'API version' }
-  ];
+    const settings = [
+      { key: 'maintenance_mode', value: 'false', type: 'boolean', description: 'API maintenance mode' },
+      { key: 'rate_limit_enabled', value: 'true', type: 'boolean', description: 'Global rate limit toggle' },
+      { key: 'max_concurrent_attacks', value: '50', type: 'number', description: 'Max concurrent attacks globally' },
+      { key: 'max_user_concurrent_attacks', value: '3', type: 'number', description: 'Max concurrent attacks per user' },
+      { key: 'auto_cleanup_enabled', value: 'true', type: 'boolean', description: 'Enable automatic cleanup jobs' },
+      { key: 'auto_cleanup_interval_ms', value: '300000', type: 'number', description: 'Automatic cleanup interval in milliseconds' },
+      { key: 'default_user_plan', value: 'Default', type: 'string', description: 'Default plan assigned to new users' },
+      { key: 'api_version', value: '1.0.0', type: 'string', description: 'API version' }
+    ];
 
-  for (const item of settings) {
-    await setSystemSetting(env, item.key, item.value, item.type, item.description);
+    for (const item of settings) {
+      const existing = await getSystemSetting(env, item.key);
+      if (!existing) {
+        await setSystemSetting(env, item.key, item.value, item.type, item.description);
+      }
+    }
+  } catch (error) {
+    console.error('initializeDatabase error:', error.message);
   }
 }
 
@@ -1055,9 +1267,17 @@ export async function setSystemSetting(env, key, value, type = 'string', descrip
   }
 }
 
+export async function getSettingOrDefault(env, key, fallback) {
+  const setting = await getSystemSetting(env, key);
+  if (setting && setting.value !== undefined && setting.value !== null && setting.value !== '') {
+    return setting.value;
+  }
+  return fallback;
+}
+
 export async function getMaintenanceMode(env) {
-  const setting = await getSystemSetting(env, 'maintenance_mode');
-  return (setting?.value === 'true') || false;
+  const value = await getSettingOrDefault(env, 'maintenance_mode', 'false');
+  return (value === 'true' || value === true || value === 1);
 }
 
 export async function setMaintenanceMode(env, enabled) {
@@ -1065,8 +1285,8 @@ export async function setMaintenanceMode(env, enabled) {
 }
 
 export async function getAttacksDisabled(env) {
-  const setting = await getSystemSetting(env, 'attacks_disabled');
-  return (setting?.value === 'true') || false;
+  const value = await getSettingOrDefault(env, 'attacks_disabled', 'false');
+  return (value === 'true' || value === true || value === 1);
 }
 
 export async function setAttacksDisabled(env, disabled) {
@@ -1091,13 +1311,13 @@ export async function updateMethod(env, methodName, updates = {}) {
   const fields = [];
   const values = [];
 
-  if (updates.default_user !== undefined) {
-    fields.push('default_user = ?');
-    values.push(Number(updates.default_user) ? 1 : 0);
+  if (updates.default_access !== undefined || updates.default_user !== undefined) {
+    fields.push('default_access = ?');
+    values.push(Number(updates.default_access ?? updates.default_user) ? 1 : 0);
   }
-  if (updates.vip_user !== undefined) {
-    fields.push('vip_user = ?');
-    values.push(Number(updates.vip_user) ? 1 : 0);
+  if (updates.vip !== undefined || updates.vip_user !== undefined) {
+    fields.push('vip = ?');
+    values.push(Number(updates.vip ?? updates.vip_user) ? 1 : 0);
   }
   if (updates.reseller !== undefined) {
     fields.push('reseller = ?');
@@ -1106,6 +1326,26 @@ export async function updateMethod(env, methodName, updates = {}) {
   if (updates.admin !== undefined) {
     fields.push('admin = ?');
     values.push(Number(updates.admin) ? 1 : 0);
+  }
+  if (updates.max_slots !== undefined) {
+    fields.push('max_slots = ?');
+    values.push(Number(updates.max_slots) || 0);
+  }
+  if (updates.max_time !== undefined) {
+    fields.push('max_time = ?');
+    values.push(updates.max_time === null || updates.max_time === '' ? null : Number(updates.max_time));
+  }
+  if (updates.raw_access !== undefined) {
+    fields.push('raw_access = ?');
+    values.push(Number(updates.raw_access) ? 1 : 0);
+  }
+  if (updates.star_access !== undefined) {
+    fields.push('star_access = ?');
+    values.push(Number(updates.star_access) ? 1 : 0);
+  }
+  if (updates.private_access !== undefined) {
+    fields.push('private_access = ?');
+    values.push(Number(updates.private_access) ? 1 : 0);
   }
   if (!fields.length) return;
 
@@ -1132,5 +1372,22 @@ export async function getDatabaseStats(env) {
   } catch (error) {
     console.error('Error getting database stats:', error.message);
     return { error: error.message };
+  }
+}
+
+export async function cleanupOldLogs(env, retentionDays = 30) {
+  const DB = getDB(env);
+  if (!DB) return { error: 'No database connection', deleted: 0 };
+  try {
+    const retentionMs = (retentionDays || 30) * 24 * 60 * 60 * 1000;
+    const cutoffDate = new Date(Date.now() - retentionMs).toISOString();
+    
+    const result = await DB.prepare("DELETE FROM logs WHERE datetime(created_at) < datetime(?)").bind(cutoffDate).run();
+    const deleted = Number(result?.meta?.changes || 0);
+    
+    return { success: true, deleted, retention_days: retentionDays, cutoff_date: cutoffDate, timestamp: new Date().toISOString() };
+  } catch (error) {
+    console.error('Error cleaning up old logs:', error.message);
+    return { error: error.message, deleted: 0 };
   }
 }

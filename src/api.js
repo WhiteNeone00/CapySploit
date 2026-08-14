@@ -10,6 +10,16 @@ import { isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget,
 
 let SERVICE_START = null;
 
+function isPowerSavingEnabled(value) {
+  if (value === undefined || value === null || value === '') return true;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['0', 'false', 'off', 'no'].includes(normalized)) return false;
+    if (['1', 'true', 'on', 'yes'].includes(normalized)) return true;
+  }
+  return Boolean(value);
+}
+
 async function ipLookup(ipOrHost) {
   try {
     const lookupUrlTemplate = LOOKUP_SERVICES.IP_LOOKUP_URLS[0] || APP_DEFAULTS.IP_LOOKUP_FALLBACK_URL;
@@ -454,10 +464,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
           resellers_service: Boolean(user.created_by && user.created_by !== user.username),
           expiry_unix: Number(user.expiry_unix || 0),
           is_banned: Boolean(user.suspended),
-          powered_saving: Boolean(user.power_saving || false),
+          powered_saving: isPowerSavingEnabled(user.power_saving),
           anti_spam: Boolean(user.bypass_anti_spam || false),
           bypass_blacklist: Boolean(user.bypass_blacklist || false),
-          api_access: Boolean(user.api_access),
+          api: Boolean(user.api ?? user.api_access),
           mfa_enabled: Boolean(user.mfa_enabled || false),
           account_status: user.suspended ? 'suspended' : warningSummary.count >= 5 ? 'at_limit' : 'active',
           warnings: Number(warningSummary.count || 0),
@@ -478,7 +488,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (!user) return jsonResponse({ error: true, message: 'user does not exist', client, code: null }, 404, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
     if (user.password !== password) return jsonResponse({ error: true, message: 'wrong password', client, code: null }, 401, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
     if (user.suspended) return jsonResponse({ error: true, message: 'account suspended', client, code: null }, 403, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
-    if (!user.api_access) return jsonResponse({ error: true, message: 'api access disabled', client, code: null }, 403, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
+    if (!(user.api ?? user.api_access)) return jsonResponse({ error: true, message: 'api access disabled', client, code: null }, 403, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME });
 
     const existingVerified = await Vault.getVerifiedDiscordLinkByUsername(env, username);
     if (existingVerified) {
@@ -606,14 +616,14 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         holder: Boolean(u.holder),
         reseller: Boolean(u.reseller),
         owner: Boolean(u.owner || false),
-        api: Boolean(u.api_access),
+        api: Boolean(u.api ?? u.api_access),
         max_time: Number(u.max_time || 60),
         cooldown: Number(u.cooldown || 10),
         max_concurrents: Number(u.max_concurrents || 1),
         max_daily_attacks: Number(u.max_daily_attacks || 100),
         attacks_remaining: attacksRemaining,
-        power_saving: Boolean(u.power_saving || 1),
-        bypass_power: !Boolean(u.power_saving || 1),
+        power_saving: isPowerSavingEnabled(u.power_saving),
+        bypass_power: !isPowerSavingEnabled(u.power_saving),
         bypass_anti_spam: Boolean(u.bypass_anti_spam || false),
         bypass_blacklist: Boolean(u.bypass_blacklist || false),
         suspended: Boolean(u.suspended),
@@ -796,7 +806,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       }
     }
     
-    if (!user.api_access) return makePolishedError('user has no API access', 403, { hint: 'Enable API access for this account before trying again.' });
+    if (!(user.api ?? user.api_access)) return makePolishedError('user has no API access', 403, { hint: 'Enable API access for this account before trying again.' });
 
     // Check IP whitelist if configured
     if (user.whitelisted_ip) {
@@ -817,8 +827,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const payloadMethods = getPayloadMethods();
     const methodsCatalog = await Vault.listMethods(env);
     const methodNames = (methodsCatalog || []).map(m => (m.name || '').toLowerCase());
+    
+    // Sync payload methods if any are missing from the database
     if (!methodNames.includes(record.method)) {
-      await Vault.addMethod(env, { name: record.method, description: `${record.method} method` });
+      await Vault.syncMethodsFromPayload(env);
     }
 
     const targetType = ((payloadMethods.find(m => (m.name || '').toLowerCase() === record.method) || null)?.target_type || expects || 'ip').toLowerCase();
@@ -926,8 +938,8 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const attackEndTime = performance.now(); // End timing
     const executionTime = attackEndTime - attackStartTime; // Calculate execution time
     const attackId = generateAttackId(); // Generate unique attack ID
-    const powerSaving = Boolean(user.power_saving || 1); // Default true (enabled)
-    const bypassPower = !powerSaving; // Inverse of power_saving
+    const powerSaving = isPowerSavingEnabled(user.power_saving);
+    const bypassPower = !powerSaving;
     
     const responseBody = {
       error: false,
@@ -961,7 +973,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         bypass_slots: Boolean(user.bypass_slots || 0),
         holder_status: Boolean(user.holder),
         vip_status: Boolean(user.vip),
-        api_status: Boolean(user.api_access),
+        api_status: Boolean(user.api ?? user.api_access),
         admin_status: Boolean(user.admin),
         power_saving: powerSaving,
         bypass_power: bypassPower,

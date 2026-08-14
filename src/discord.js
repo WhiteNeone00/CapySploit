@@ -12,7 +12,7 @@ export function buildDiscordRoleNames(user, env) {
   const defaultVerified = env.DISCORD_VERIFIED_ROLE_NAME || 'Verified';
   const defaultCustomer = env.DISCORD_CUSTOMER_ROLE_NAME || 'Customer';
   const roles = [defaultVerified];
-  const hasPlanAccess = Boolean(user.vip || user.holder || user.reseller || user.api_access || Number(user.max_daily_attacks || 0) > 0);
+  const hasPlanAccess = Boolean(user.vip || user.holder || user.reseller || user.api || user.api_access || Number(user.max_daily_attacks || 0) > 0);
   if (hasPlanAccess) roles.push(defaultCustomer);
   if (user.vip) roles.push('VIP');
   if (user.holder) roles.push('Holder');
