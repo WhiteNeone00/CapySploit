@@ -1,7 +1,6 @@
 // Policy helpers for method access and user-specific limits.
 export function isMethodPermittedForUser(user, methodMeta) {
   if (!methodMeta) return { allowed: true, reason: 'default' };
-  if (methodMeta.enabled === false) return { allowed: false, reason: 'method disabled' };
 
   const roleFlags = {
     holder: Boolean(user?.holder),

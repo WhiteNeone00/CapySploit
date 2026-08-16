@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { jsonResponse, makePolishedError } from '../src/response.js';
-import { countUserDailyAttacks, ensureTables, getUserWarningSummary, recordUserWarning, setSystemSetting } from '../src/vault-db.js';
+import { countUserDailyAttacks, ensureTables, getUserWarningSummary, recordUserWarning, setSystemSetting, syncMethodsFromPayload, updateMethod, getMethod } from '../src/vault-db.js';
 import { logAuditAction } from '../src/admin.js';
 import { getCachedSystemSetting } from '../src/helpers.js';
 
@@ -47,6 +47,101 @@ test('adds missing user columns for the current schema', async () => {
 
   assert.ok(calls.some((sql) => sql.includes('ALTER TABLE users ADD COLUMN whitelisted_ip')));
   assert.ok(calls.some((sql) => sql.includes('ALTER TABLE users ADD COLUMN last_ip')));
+});
+
+test('syncMethodsFromPayload keeps payload as source of truth and removes stale rows', async () => {
+  const calls = [];
+  const DB = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          calls.push({ sql, args });
+          return {
+            async run() {
+              return { meta: { changes: 1 } };
+            },
+            async all() {
+              if (sql.includes('SELECT name, enabled') || sql.includes('SELECT name FROM methods')) {
+                return { results: [{ name: 'udp' }, { name: 'stale-method' }] };
+              }
+              return { results: [] };
+            }
+          };
+        },
+        async all() {
+          if (sql.includes('SELECT name, enabled') || sql.includes('SELECT name FROM methods')) {
+            return { results: [{ name: 'udp' }, { name: 'stale-method' }] };
+          }
+          return { results: [] };
+        }
+      };
+    }
+  };
+
+  const result = await syncMethodsFromPayload({ capi_db: DB });
+
+  assert.equal(result.error, null);
+  assert.ok(calls.some((call) => call.sql.includes('DELETE FROM methods')) || calls.some((call) => call.sql.includes('DELETE FROM methods WHERE')));
+  assert.ok(calls.some((call) => call.sql.includes('enabled = ?')) || calls.some((call) => call.sql.includes('enabled, target_type')));
+});
+
+test('database method settings control enabled state, slots, concurrency, and time limits', async () => {
+  const method = {
+    name: 'udp',
+    enabled: 0,
+    max_slots: 7,
+    max_concurrents: 3,
+    max_time: 45,
+    default_port: 53,
+    target_type: 'ip'
+  };
+
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async run() {
+              if (sql.includes('UPDATE methods SET')) {
+                Object.assign(method, {
+                  enabled: Number(args[0]),
+                  max_slots: Number(args[1]),
+                  max_concurrents: Number(args[2]),
+                  default_port: Number(args[3]),
+                  target_type: args[4],
+                  max_time: Number(args[5])
+                });
+              }
+              return { meta: { changes: 1 } };
+            },
+            async all() {
+              if (sql.includes('SELECT * FROM methods WHERE name = ?')) {
+                return { results: [method] };
+              }
+              return { results: [] };
+            }
+          };
+        }
+      };
+    }
+  };
+
+  await updateMethod({ capi_db: db }, 'udp', {
+    enabled: 0,
+    max_slots: 7,
+    max_concurrents: 3,
+    max_time: 45,
+    default_port: 53,
+    target_type: 'ip'
+  });
+
+  const saved = await getMethod({ capi_db: db }, 'udp');
+  assert.equal(saved.enabled, 0);
+  assert.equal(saved.max_slots, 7);
+  assert.equal(saved.max_concurrents, 3);
+  assert.equal(saved.max_time, 45);
+  assert.equal(saved.default_port, 53);
+  assert.equal(saved.target_type, 'ip');
 });
 
 test('resets warnings daily and suspends after 5 warnings', async () => {

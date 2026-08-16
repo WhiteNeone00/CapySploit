@@ -269,7 +269,11 @@ export async function ensureTables(env) {
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN holder INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN reseller INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN private_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN enabled INTEGER DEFAULT 1');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN target_type TEXT DEFAULT "ip"');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN default_port INTEGER DEFAULT 80');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN max_time INTEGER');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN max_concurrents INTEGER DEFAULT 1');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN raw_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN star_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN private_access INTEGER DEFAULT 0');
@@ -1130,23 +1134,38 @@ export async function seedMethods(env) {
 
 export async function syncMethodsFromPayload(env) {
   const DB = getDB(env);
-  if (!DB) return { added: 0, updated: 0, error: null };
+  if (!DB) return { added: 0, updated: 0, removed: 0, error: null };
 
   try {
     const payloadMethods = (DEFAULT_PAYLOAD.methods || []);
-    const existing = await DB.prepare('SELECT name FROM methods').all();
-    const existingNames = new Set((existing?.results || []).map(m => m.name?.toLowerCase()));
+    const existing = await DB.prepare('SELECT name, enabled, description, target_type, default_port, max_slots, max_time FROM methods').all();
+    const existingRows = (existing?.results || []).map((row) => ({
+      name: String(row?.name || '').toLowerCase().trim(),
+      enabled: Number(row?.enabled ?? 1),
+      description: row?.description || '',
+      target_type: row?.target_type || 'ip',
+      default_port: row?.default_port || 80,
+      max_slots: row?.max_slots || 0,
+      max_time: row?.max_time || null
+    }));
+    const existingNames = new Set(existingRows.map((row) => row.name).filter(Boolean));
+    const payloadNames = new Set();
 
     let added = 0;
     let updated = 0;
+    let removed = 0;
 
     for (const item of payloadMethods) {
       const name = (item.name || '').toLowerCase().trim();
       if (!name) continue;
+      payloadNames.add(name);
 
       const normalized = {
         name,
         description: item.description || `${name} method`,
+        enabled: Number(item.enabled ?? true),
+        target_type: String(item.target_type || 'ip').toLowerCase(),
+        default_port: Number(item.default_port ?? 80),
         default_access: Number(item.default_access ?? 0),
         vip: Number(item.vip ?? 1),
         reseller: Number(item.reseller ?? 1),
@@ -1160,15 +1179,18 @@ export async function syncMethodsFromPayload(env) {
 
       if (!existingNames.has(name)) {
         await DB.prepare(
-          'INSERT INTO methods (name, description, default_access, vip, reseller, admin, max_slots, max_time, raw_access, star_access, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO methods (name, description, enabled, target_type, default_access, vip, reseller, admin, max_slots, default_port, max_time, raw_access, star_access, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         ).bind(
           normalized.name,
           normalized.description,
+          normalized.enabled ? 1 : 0,
+          normalized.target_type,
           normalized.default_access ? 1 : 0,
           normalized.vip ? 1 : 0,
           normalized.reseller ? 1 : 0,
           normalized.admin ? 1 : 0,
           normalized.max_slots || 0,
+          normalized.default_port || 80,
           normalized.max_time,
           normalized.raw_access ? 1 : 0,
           normalized.star_access ? 1 : 0,
@@ -1179,14 +1201,17 @@ export async function syncMethodsFromPayload(env) {
         existingNames.add(name);
       } else {
         await DB.prepare(
-          'UPDATE methods SET description = ?, default_access = ?, vip = ?, reseller = ?, admin = ?, max_slots = ?, max_time = ?, raw_access = ?, star_access = ?, private_access = ?, updated_at = ? WHERE name = ?'
+          'UPDATE methods SET description = ?, enabled = ?, target_type = ?, default_access = ?, vip = ?, reseller = ?, admin = ?, max_slots = ?, default_port = ?, max_time = ?, raw_access = ?, star_access = ?, private_access = ?, updated_at = ? WHERE name = ?'
         ).bind(
           normalized.description,
+          normalized.enabled ? 1 : 0,
+          normalized.target_type,
           normalized.default_access ? 1 : 0,
           normalized.vip ? 1 : 0,
           normalized.reseller ? 1 : 0,
           normalized.admin ? 1 : 0,
           normalized.max_slots || 0,
+          normalized.default_port || 80,
           normalized.max_time,
           normalized.raw_access ? 1 : 0,
           normalized.star_access ? 1 : 0,
@@ -1198,14 +1223,21 @@ export async function syncMethodsFromPayload(env) {
       }
     }
 
+    for (const row of existingRows) {
+      if (!payloadNames.has(row.name)) {
+        await DB.prepare('DELETE FROM methods WHERE name = ?').bind(row.name).run();
+        removed++;
+      }
+    }
+
     invalidateMethodCache();
     invalidateSettingsCache();
-    return { added, updated, error: null };
+    return { added, updated, removed, error: null };
   } catch (error) {
     console.error('syncMethodsFromPayload error:', error.message);
     invalidateMethodCache();
     invalidateSettingsCache();
-    return { added: 0, updated: 0, error: error.message };
+    return { added: 0, updated: 0, removed: 0, error: error.message };
   }
 }
 
@@ -1368,9 +1400,25 @@ export async function updateMethod(env, methodName, updates = {}) {
     fields.push('admin = ?');
     values.push(Number(updates.admin) ? 1 : 0);
   }
+  if (updates.enabled !== undefined) {
+    fields.push('enabled = ?');
+    values.push(Number(updates.enabled) ? 1 : 0);
+  }
   if (updates.max_slots !== undefined) {
     fields.push('max_slots = ?');
     values.push(Number(updates.max_slots) || 0);
+  }
+  if (updates.max_concurrents !== undefined) {
+    fields.push('max_concurrents = ?');
+    values.push(Number(updates.max_concurrents) || 1);
+  }
+  if (updates.default_port !== undefined) {
+    fields.push('default_port = ?');
+    values.push(Number(updates.default_port) || 80);
+  }
+  if (updates.target_type !== undefined) {
+    fields.push('target_type = ?');
+    values.push(String(updates.target_type || 'ip').toLowerCase());
   }
   if (updates.max_time !== undefined) {
     fields.push('max_time = ?');

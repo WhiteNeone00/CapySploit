@@ -633,22 +633,29 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     const payloadMethods = getPayloadMethods();
     const methodMap = new Map((payloadMethods || []).map((item) => [String(item?.name || '').toLowerCase(), item]));
 
-    const methods = (dbMethods || []).map((method) => {
-      const meta = methodMap.get(String(method?.name || '').toLowerCase()) || null;
-      return {
-        id: method?.id || null,
-        name: method?.name || null,
-        description: method?.description || meta?.description || `${method?.name || 'method'} method`,
-        created_at: method?.created_at || null,
-        enabled: Boolean(meta?.enabled ?? true),
-        target_type: meta?.target_type || null,
-        default_port: meta?.default_port || null,
-        max_time: meta?.max_time || null,
-        max_concurrents: meta?.max_concurrents || null,
-        max_slots: meta?.max_slots || null,
-        api_links: Array.isArray(meta?.api_links) ? meta.api_links : []
-      };
-    });
+    const methods = (dbMethods || [])
+      .map((method) => {
+        const meta = methodMap.get(String(method?.name || '').toLowerCase()) || null;
+        const enabledValue = method?.enabled ?? meta?.enabled ?? true;
+        return {
+          id: method?.id || null,
+          name: method?.name || null,
+          description: method?.description || meta?.description || `${method?.name || 'method'} method`,
+          created_at: method?.created_at || null,
+          enabled: Boolean(Number(enabledValue)),
+          target_type: meta?.target_type || method?.target_type || null,
+          default_port: meta?.default_port ?? method?.default_port ?? null,
+          max_time: meta?.max_time ?? method?.max_time ?? null,
+          max_concurrents: meta?.max_concurrents ?? method?.max_concurrents ?? null,
+          max_slots: meta?.max_slots ?? method?.max_slots ?? null,
+          api_links: Array.isArray(meta?.api_links) ? meta.api_links : []
+        };
+      })
+      .sort((a, b) => {
+        const aId = Number(a?.id ?? Number.MAX_SAFE_INTEGER);
+        const bId = Number(b?.id ?? Number.MAX_SAFE_INTEGER);
+        return aId - bId;
+      });
     
     const paginatedResult = paginate(methods, limit, offset);
 

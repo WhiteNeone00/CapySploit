@@ -259,26 +259,19 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     return { ok: false, reason: 'missing_credentials' };
   }
 
-  const ALLOWED_METHODS = {
-    udp: 'ip',
-    tcp: 'ip',
-    http: 'url',
-    'http-raw': 'url',
-    https: 'url',
-    'https-raw': 'url',
-    'cf-bypass': 'url',
-    slowloris: 'url',
-    'udp-flood': 'ip',
-    'tcp-flood': 'ip',
-    'http-flood': 'url',
-    dns: 'url',
-    icmp: 'ip',
-    syn: 'ip',
-    ack: 'ip',
+  const ALLOWED_METHODS = Object.fromEntries(
+    (getPayloadMethods() || []).filter((item) => item && item.name).map((item) => [String(item.name).toLowerCase(), String(item.target_type || 'ip').toLowerCase()])
+  );
+
+  const METHOD_ALIASES = {
     get: 'url',
     post: 'url',
-    raw: 'url'
+    raw: 'url',
+    dns: 'url',
+    ack: 'ip'
   };
+
+  Object.assign(ALLOWED_METHODS, METHOD_ALIASES);
 
   if (endpoint === 'network_statistics') {
     const users = await Vault.listUsers(env);
@@ -419,19 +412,25 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const payloadMethods = getPayloadMethods();
     const methodMap = new Map((payloadMethods || []).map((item) => [String(item?.name || '').toLowerCase(), item]));
 
-    const methods = (dbMethods || []).map((method) => {
-      const meta = methodMap.get(String(method?.name || '').toLowerCase()) || null;
-      return {
-        id: method?.id || null,
-        name: method?.name || null,
-        description: method?.description || meta?.description || `${method?.name || 'method'} method`,
-        target_type: meta?.target_type || null,
-        default_port: meta?.default_port || null,
-        max_time: meta?.max_time || null,
-        max_concurrents: meta?.max_concurrents || null,
-        max_slots: meta?.max_slots || null
-      };
-    });
+    const methods = (dbMethods || [])
+      .map((method) => {
+        const meta = methodMap.get(String(method?.name || '').toLowerCase()) || null;
+        return {
+          id: method?.id || null,
+          name: method?.name || null,
+          description: method?.description || meta?.description || `${method?.name || 'method'} method`,
+          target_type: meta?.target_type || null,
+          default_port: meta?.default_port || null,
+          max_time: meta?.max_time || null,
+          max_concurrents: meta?.max_concurrents || null,
+          max_slots: meta?.max_slots || null
+        };
+      })
+      .sort((a, b) => {
+        const aId = Number(a?.id ?? Number.MAX_SAFE_INTEGER);
+        const bId = Number(b?.id ?? Number.MAX_SAFE_INTEGER);
+        return aId - bId;
+      });
 
     return structuredResponse({ error: false, message: 'public methods loaded', data: { methods } });
   }
@@ -856,7 +855,8 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       }
     }
 
-    const targetType = ((payloadMethods.find(m => (m.name || '').toLowerCase() === record.method) || null)?.target_type || expects || 'ip').toLowerCase();
+    const dbMethodMeta = (methodsCatalog || []).find(m => (m.name || '').toLowerCase() === record.method) || null;
+    const targetType = String((dbMethodMeta?.target_type || payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.target_type || expects || 'ip')).toLowerCase();
     const targetProvided = String(record.target || '').trim();
 
     if (targetType === 'ip' && !isIPv4(targetProvided)) {
@@ -872,7 +872,17 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       return makePolishedError(`target is not allowed (${reason})`, 400, { hint: 'Use a public IP address or domain that is not reserved or private.' });
     }
 
-    const methodMeta = payloadMethods.find(m => (m.name || '').toLowerCase() === record.method) || (methodsCatalog || []).find(m => (m.name || '').toLowerCase() === record.method) || null;
+    const methodMeta = {
+      ...(payloadMethods.find(m => (m.name || '').toLowerCase() === record.method) || {}),
+      ...(dbMethodMeta || {}),
+      name: record.method,
+      enabled: dbMethodMeta?.enabled ?? payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.enabled ?? true,
+      max_slots: dbMethodMeta?.max_slots ?? payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.max_slots ?? 0,
+      max_time: dbMethodMeta?.max_time ?? payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.max_time ?? null,
+      max_concurrents: dbMethodMeta?.max_concurrents ?? payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.max_concurrents ?? 1,
+      target_type: targetType,
+      default_port: dbMethodMeta?.default_port ?? payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.default_port ?? 80
+    };
     const policyResult = isMethodPermittedForUser(user, methodMeta);
     if (!policyResult.allowed) return makePolishedError(`method ${record.method} is blocked by policy (${policyResult.reason})`, 403, { hint: 'Upgrade the account plan or remove the policy restriction for this method.' });
 

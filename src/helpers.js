@@ -79,7 +79,7 @@ export async function getMethods(env) {
     
     const DB = env && (env.capi_db || env.CAPI_DB || env.DB);
     if (DB) {
-      const res = await DB.prepare('SELECT * FROM methods WHERE enabled = 1 ORDER BY name ASC').all();
+      const res = await DB.prepare('SELECT * FROM methods ORDER BY name ASC').all();
       if (res.results && res.results.length > 0) {
         methodCache.set(cacheKey, res.results, CACHE_CONFIG.METHODS_TTL_MS || 600000);
         return res.results;
