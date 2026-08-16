@@ -3,7 +3,13 @@ export function isMethodPermittedForUser(user, methodMeta) {
   if (!methodMeta) return { allowed: true, reason: 'default' };
 
   const enabled = methodMeta.enabled;
-  if (enabled === false || enabled === 0 || enabled === '0') {
+  const normalizedEnabled = (() => {
+    if (enabled === true || enabled === 1 || enabled === '1' || enabled === 'true') return true;
+    if (enabled === false || enabled === 0 || enabled === '0' || enabled === 'false') return false;
+    return enabled !== undefined && enabled !== null && enabled !== '' ? Boolean(enabled) : true;
+  })();
+
+  if (!normalizedEnabled) {
     return { allowed: false, reason: 'method disabled' };
   }
 

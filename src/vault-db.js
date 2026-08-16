@@ -2,7 +2,14 @@ import { DEFAULT_PAYLOAD } from '../payload.js';
 import { DEFAULT_ROOT_CREDENTIALS } from './config.js';
 
 import { USER_LIMITS } from './config.js';
-import { invalidateSystemSettingCache, invalidateMethodCache, invalidateUserCache, invalidateSettingsCache } from './helpers.js';
+import {
+  getCachedMethods,
+  getCachedUser,
+  invalidateSystemSettingCache,
+  invalidateMethodCache,
+  invalidateUserCache,
+  invalidateSettingsCache
+} from './helpers.js';
 
 export function getDB(env) {
   return env && (env.capi_db || env.CAPI_DB || env.DB || env.CAPI_db);
@@ -337,9 +344,22 @@ export async function ensureTables(env) {
 
 export async function getUser(env, username) {
   const DB = getDB(env);
-  if (!DB) return null;
-  const res = await DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).all();
-  return (res && res.results && res.results[0]) || null;
+  if (!DB || !username) return null;
+
+  const cached = getCachedUser(username, async () => {
+    const explicit = await DB.prepare(`SELECT
+      username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,
+      created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,
+      power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,private_access,expires_at,
+      last_ip,whitelisted_ip,warning_count,warning_reset_at
+      FROM users WHERE username = ?`).bind(username).all();
+    if (explicit?.results?.[0]) return explicit.results[0];
+
+    const fallback = await DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).all();
+    return fallback?.results?.[0] || null;
+  });
+
+  return cached;
 }
 
 export async function getUserBatch(env, usernames = []) {
@@ -348,9 +368,20 @@ export async function getUserBatch(env, usernames = []) {
   if (!DB) return {};
   try {
     const placeholders = usernames.map(() => '?').join(',');
-    const res = await DB.prepare(`SELECT * FROM users WHERE username IN (${placeholders})`).bind(...usernames).all();
+    const explicit = await DB.prepare(`SELECT
+      username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,
+      created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,
+      power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,private_access,expires_at,
+      last_ip,whitelisted_ip,warning_count,warning_reset_at
+      FROM users WHERE username IN (${placeholders})`).bind(...usernames).all();
     const map = {};
-    (res?.results || []).forEach((user) => {
+    (explicit?.results || []).forEach((user) => {
+      map[user.username] = user;
+    });
+    if (Object.keys(map).length === usernames.length) return map;
+
+    const fallback = await DB.prepare(`SELECT * FROM users WHERE username IN (${placeholders})`).bind(...usernames).all();
+    (fallback?.results || []).forEach((user) => {
       map[user.username] = user;
     });
     return map;
@@ -632,8 +663,11 @@ export async function getRecentAttacks(env, username, limit = 10) {
 export async function listMethods(env) {
   const DB = getDB(env);
   if (!DB) return [];
-  const res = await DB.prepare('SELECT id, name, description, default_access, vip, reseller, admin, max_slots, max_time, raw_access, star_access, private_access, created_at FROM methods ORDER BY name ASC').all();
-  return res.results || [];
+
+  return await getCachedMethods(async () => {
+    const res = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_time, raw_access, star_access, private_access, created_at FROM methods ORDER BY name ASC').all();
+    return res.results || [];
+  });
 }
 
 export async function addBlacklistTarget(env, target, reason) {
@@ -1268,7 +1302,7 @@ export async function getSystemSetting(env, key) {
   const DB = getDB(env);
   if (!DB) return null;
   try {
-    const res = await DB.prepare('SELECT * FROM system_settings WHERE key = ?').bind(key).all();
+    const res = await DB.prepare('SELECT key, value, type, description, created_at, updated_at FROM system_settings WHERE key = ?').bind(key).all();
     return res?.results?.[0] || null;
   } catch (error) {
     console.error(`Error getting system setting ${key}:`, error.message);
@@ -1341,8 +1375,11 @@ export async function getMethod(env, methodName) {
   const DB = getDB(env);
   if (!DB) return null;
   try {
-    const res = await DB.prepare('SELECT * FROM methods WHERE name = ?').bind(methodName).all();
-    return res?.results?.[0] || null;
+    const explicit = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, default_port, max_time, raw_access, star_access, private_access, created_at, updated_at, target_type FROM methods WHERE name = ?').bind(methodName).all();
+    if (explicit?.results?.[0]) return explicit.results[0];
+
+    const fallback = await DB.prepare('SELECT * FROM methods WHERE name = ?').bind(methodName).all();
+    return fallback?.results?.[0] || null;
   } catch (error) {
     console.error(`Error getting method ${methodName}:`, error.message);
     return null;
@@ -1372,8 +1409,14 @@ export async function updateMethod(env, methodName, updates = {}) {
     values.push(Number(updates.admin) ? 1 : 0);
   }
   if (updates.enabled !== undefined) {
+    const enabledValue = updates.enabled;
+    const normalizedEnabled = (() => {
+      if (enabledValue === true || enabledValue === 1 || enabledValue === '1' || enabledValue === 'true') return 1;
+      if (enabledValue === false || enabledValue === 0 || enabledValue === '0' || enabledValue === 'false') return 0;
+      return Number(enabledValue) ? 1 : 0;
+    })();
     fields.push('enabled = ?');
-    values.push(Number(updates.enabled) ? 1 : 0);
+    values.push(normalizedEnabled);
   }
   if (updates.max_slots !== undefined) {
     fields.push('max_slots = ?');

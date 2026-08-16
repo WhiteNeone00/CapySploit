@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { jsonResponse, makePolishedError } from '../src/response.js';
-import { countUserDailyAttacks, ensureTables, getUserWarningSummary, recordUserWarning, setSystemSetting, syncMethodsFromPayload, updateMethod, getMethod } from '../src/vault-db.js';
+import { countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, recordUserWarning, setSystemSetting, syncMethodsFromPayload, updateMethod, getMethod, listMethods } from '../src/vault-db.js';
 import { logAuditAction } from '../src/admin.js';
-import { getCachedSystemSetting } from '../src/helpers.js';
+import { getCachedSystemSetting, invalidateMethodCache, invalidateUserCache } from '../src/helpers.js';
 import { isMethodPermittedForUser } from '../src/policy.js';
+import { fanOutMethodApiLinks } from '../src/api.js';
 
 test('disabled methods are rejected even when the user otherwise qualifies', () => {
   const user = { username: 'alice', api: true, vip: true };
@@ -12,6 +13,77 @@ test('disabled methods are rejected even when the user otherwise qualifies', () 
 
   assert.equal(result.allowed, false);
   assert.match(result.reason, /disabled/i);
+});
+
+test('user lookups reuse cached results across repeated requests', async () => {
+  const username = 'cache-user-fast-path';
+  invalidateUserCache(username);
+
+  let calls = 0;
+  const DB = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async all() {
+              calls += 1;
+              return { results: [{ username, password: 'pass', api: 1, vip: 1 }] };
+            }
+          };
+        }
+      };
+    }
+  };
+
+  const env = { capi_db: DB };
+  const first = await getUser(env, username);
+  const second = await getUser(env, username);
+
+  assert.equal(first.username, username);
+  assert.equal(second.username, username);
+  assert.equal(calls, 1);
+});
+
+test('fan-out backend links run in parallel without blocking the attack response', async () => {
+  const started = Date.now();
+  let calls = 0;
+
+  global.fetch = async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+  };
+
+  const result = await fanOutMethodApiLinks({ api_links: [{ name: 'a', url: 'https://example.com/a', method: 'GET' }, { name: 'b', url: 'https://example.com/b', method: 'GET' }] }, { target: '1.1.1.1', port: 80, duration: 60, method: 'udp', username: 'alice', rps: 0, threads: 0, concurrents: 1 });
+
+  assert.equal(calls, 2);
+  assert.equal(result.length, 2);
+  assert.ok(Date.now() - started < 800);
+
+  delete global.fetch;
+});
+
+test('method list includes the enabled flag from the database so toggles actually affect runtime policy', async () => {
+  invalidateMethodCache();
+
+  const DB = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return this;
+        },
+        async all() {
+          if (sql.includes('SELECT id, name, description, enabled, default_access')) {
+            return { results: [{ id: 1, name: 'http', enabled: 1, description: 'HTTP flood', default_access: 1, vip: 0, reseller: 0, admin: 1, max_slots: 4, max_time: 60, raw_access: 0, star_access: 0, private_access: 0, created_at: new Date().toISOString() }] };
+          }
+          return { results: [] };
+        }
+      };
+    }
+  };
+
+  const methods = await listMethods({ capi_db: DB });
+  assert.equal(methods[0]?.enabled, 1);
 });
 
 test('counts attacks by calendar day instead of a rolling 24h window', async () => {
@@ -92,6 +164,87 @@ test('syncMethodsFromPayload keeps payload as source of truth and removes stale 
   assert.equal(result.error, null);
   assert.ok(calls.some((call) => call.sql.includes('DELETE FROM methods')) || calls.some((call) => call.sql.includes('DELETE FROM methods WHERE')));
   assert.ok(calls.some((call) => call.sql.includes('enabled = ?')) || calls.some((call) => call.sql.includes('enabled, target_type')));
+});
+
+test('database method settings accept string booleans when toggling enabled state', async () => {
+  const method = {
+    name: 'udp',
+    enabled: 0,
+    max_slots: 7,
+    max_concurrents: 3,
+    max_time: 45,
+    default_port: 53,
+    target_type: 'ip'
+  };
+
+  const count = { user: 0, ongoing: 0, global: 0 };
+  const DB = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async all() {
+              if (sql.includes('COUNT(*) AS c FROM logs')) {
+                count.user += 1;
+                return { results: [{ c: 1 }] };
+              }
+              if (sql.includes('COUNT(*) AS c FROM ongoing_attacks')) {
+                count.ongoing += 1;
+                return { results: [{ c: 0 }] };
+              }
+              return { results: [] };
+            },
+            async run() {
+              return { meta: { changes: 1 } };
+            }
+          };
+        }
+      };
+    }
+  };
+
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async run() {
+              if (sql.includes('UPDATE methods SET')) {
+                Object.assign(method, {
+                  enabled: Number(args[0]) ? 1 : 0,
+                  max_slots: Number(args[1]),
+                  max_concurrents: Number(args[2]),
+                  default_port: Number(args[3]),
+                  target_type: args[4],
+                  max_time: Number(args[5])
+                });
+              }
+              return { meta: { changes: 1 } };
+            },
+            async all() {
+              if (sql.includes('SELECT * FROM methods WHERE name = ?')) {
+                return { results: [method] };
+              }
+              return { results: [] };
+            }
+          };
+        }
+      };
+    }
+  };
+
+  await updateMethod({ capi_db: db }, 'udp', {
+    enabled: 'true',
+    max_slots: 7,
+    max_concurrents: 3,
+    max_time: 45,
+    default_port: 53,
+    target_type: 'ip'
+  });
+
+  const saved = await getMethod({ capi_db: db }, 'udp');
+  assert.equal(saved.enabled, 1);
+  assert.ok(count.user >= 0);
 });
 
 test('database method settings control enabled state, slots, concurrency, and time limits', async () => {

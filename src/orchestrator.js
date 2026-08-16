@@ -159,7 +159,9 @@ export async function handleRequest(request, env) {
       sourceIp,
       user: null,
       userBypassEnabled: false,
-      rateLimitTarget: username ? `route:${username}` : `route:${sourceIp}`
+      rateLimitTarget: username ? `route:${username}` : `route:${sourceIp}`,
+      serviceName,
+      apiVersion
     };
 
     // Load user info once per request if username provided

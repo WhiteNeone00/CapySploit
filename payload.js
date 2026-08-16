@@ -110,7 +110,7 @@ export const DEFAULT_PAYLOAD = {
     {
       name: 'tcp',
       description: 'TCP flood method',
-      enabled: false,
+      enabled: true,
       target_type: 'ip',
       default_port: 80,
       max_concurrents: 5,
