@@ -259,10 +259,7 @@ curl "http://localhost:8787/admin/view_audit_logs?username=admin&password=pass12
 
 ### Method Management Actions
 
-**Planned for implementation:**
-- `add_method` - New attack method created
-- `edit_method` - Method parameters modified
-- `delete_method` - Method removed
+Current behavior is handled by the payload/database sync layer and the `list_methods` admin route; no standalone add/edit/delete method endpoint is active.
 
 ### Blacklist Actions
 

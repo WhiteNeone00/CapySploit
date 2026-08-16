@@ -235,9 +235,9 @@
   ```
 
 ### 4.5 ⚠️ LACKING PAGINATION LIMITS
-- **Issue:** Some endpoints don't pagination (list_apis, etc.)
+- **Issue:** Some list endpoints needed pagination consistency
 - **Status:** Fixed for view_all_* endpoints in Phase 5
-- **Remaining:** /admin/list_apis should also support pagination
+- **Remaining:** None in the active router; legacy API list docs were removed
 
 ### 4.6 ⚠️ NO REQUEST VALIDATION MIDDLEWARE
 - **Issue:** Each endpoint validates independently
@@ -324,7 +324,7 @@
 - **Example:** Load user + warnings + daily attacks in single query
 
 ### 6.3 Caching Strategy
-- **Implement:** Cache methods list (invalidate on add_method)
+- **Implement:** Cache methods list (invalidate when method metadata changes)
 - **Implement:** Cache blacklist (invalidate on add_blacklist)
 - **Implement:** Cache user limits (5-minute TTL)
 - **Impact:** 50-80% reduction in DB queries

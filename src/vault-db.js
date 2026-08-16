@@ -629,35 +629,6 @@ export async function getRecentAttacks(env, username, limit = 10) {
   return [...ongoing, ...logs].slice(0, Number(limit || 10));
 }
 
-export async function addMethod(env, method) {
-  const DB = getDB(env);
-  if (!DB) return;
-  const name = (method.name || method).toLowerCase().trim();
-  const description = method.description || `${name} method`;
-  const maxTime = method.max_time === undefined || method.max_time === null || method.max_time === '' ? null : Number(method.max_time);
-  const defaultAccess = method.default_access ?? method.default_user ?? 0;
-  const vipAccess = method.vip ?? method.vip_user ?? 1;
-  const rawAccess = method.raw_access ?? 0;
-  const starAccess = method.star_access ?? 0;
-  const privateAccess = method.private_access ?? 0;
-  await DB.prepare('INSERT OR IGNORE INTO methods (name, description, default_access, vip, reseller, admin, max_slots, max_time, raw_access, star_access, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(
-    name,
-    description,
-    Number(defaultAccess) ? 1 : 0,
-    Number(vipAccess) ? 1 : 0,
-    Number(method.reseller ?? 1) ? 1 : 0,
-    Number(method.admin ?? 1) ? 1 : 0,
-    Number(method.max_slots ?? 0) || 0,
-    maxTime,
-    Number(rawAccess) ? 1 : 0,
-    Number(starAccess) ? 1 : 0,
-    Number(privateAccess) ? 1 : 0,
-    new Date().toISOString()
-  ).run();
-  invalidateMethodCache();
-  invalidateSettingsCache();
-}
-
 export async function listMethods(env) {
   const DB = getDB(env);
   if (!DB) return [];

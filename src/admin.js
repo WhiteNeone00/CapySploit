@@ -620,12 +620,6 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     return structuredResponse({ error: false, message: 'Code syntax is valid and error-free.', data: { valid: true, file: q.file_name || q.file || 'inline.js' } });
   }
 
-  if (endpoint === 'add_method') {
-    if (!q.name) return makePolishedError('missing name', 400, { hint: 'Provide a method name for the new method.' });
-    await Vault.addMethod(env, { name: q.name, description: q.description || `${q.name} method` });
-    return jsonResponse({ error: false, message: `Attack method '${q.name}' has been registered successfully.` });
-  }
-
   if (endpoint === 'list_methods') {
     const dbMethods = await Vault.listMethods(env);
     const limit = q.limit || 50;

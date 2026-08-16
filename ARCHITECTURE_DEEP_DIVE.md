@@ -104,9 +104,6 @@ orchestrator.js (handleRequest)
 /admin/view_all_users        → List all users (paginated)
 /admin/change_password       → Update user password
 /admin/generate_password     → Reset with new password
-/admin/add_method            → Create attack method
-/admin/edit_method           → Modify method config
-/admin/delete_method         → Remove method
 /admin/list_methods          → View all methods
 /admin/add_blacklist         → Add target to blocklist
 /admin/remove_blacklist      → Remove from blocklist

@@ -722,18 +722,6 @@ Response (200): `structuredResponse` with `data.users` array.
 
 - On failure: `structuredResponse` with `error: true`, `message: 'syntax check failed'`, `status:400`, and `extra.debug` containing the syntax result.
 
-### GET /admin/add_api
-Success (200): `{ "error": false, "message": "api endpoint added", ... }` or 400 on missing url.
-
-### GET /admin/list_apis
-Response (200): `{ "error": false, "apis": [ /* rows */ ], ... }`
-
-### GET /admin/delete_api
-Success (200): `{ "error": false, "message": "api removed" }` or 400 if missing id.
-
-### GET /admin/add_method
-Success (200): `{ "error": false, "message": "method added" }`.
-
 ### GET /admin/list_methods
 Response (200): `structuredResponse` with `data.methods` array of method objects.
 
