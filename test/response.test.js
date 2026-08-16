@@ -5,7 +5,7 @@ import { countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, re
 import { logAuditAction } from '../src/admin.js';
 import { getCachedSystemSetting, invalidateMethodCache, invalidateUserCache } from '../src/helpers.js';
 import { isMethodPermittedForUser } from '../src/policy.js';
-import { fanOutMethodApiLinks, getSafeIpInfo } from '../src/api.js';
+import { fanOutMethodApiLinks, getSafeIpInfo, ipLookup, resolveFastIpInfo } from '../src/api.js';
 
 test('null IP metadata is treated as an empty object instead of crashing', () => {
   const result = getSafeIpInfo(null);
@@ -18,6 +18,48 @@ test('null IP metadata is treated as an empty object instead of crashing', () =>
     };
     assert.deepEqual(payload, {});
   });
+});
+
+test('repeated IP lookups are cached so the attack route does not refetch the same target', async () => {
+  let fetchCalls = 0;
+  global.fetch = async () => {
+    fetchCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ status: 'success', country: 'Australia', countryCode: 'AU', query: '175.34.65.34' })
+    };
+  };
+
+  const first = await ipLookup('175.34.65.34');
+  const second = await ipLookup('175.34.65.34');
+
+  assert.equal(first.country, 'Australia');
+  assert.equal(second.country, 'Australia');
+  assert.equal(fetchCalls, 1);
+
+  delete global.fetch;
+});
+
+test('slow geolocation metadata does not block the attack response', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ status: 'success', country: 'Japan', countryCode: 'JP' })
+    };
+  };
+
+  const before = Date.now();
+  const info = await resolveFastIpInfo('203.0.113.7', 150);
+  const elapsed = Date.now() - before;
+
+  assert.deepEqual(info, {});
+  assert.ok(elapsed < 800, `expected fast fallback but took ${elapsed}ms`);
+
+  global.fetch = originalFetch;
 });
 
 test('disabled methods are rejected even when the user otherwise qualifies', () => {

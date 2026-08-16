@@ -9,9 +9,46 @@ import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, LOOKUP_SERVICES, USER
 import { isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget, normalizeBlacklistValue, isBlacklistedTarget, isBlacklistedByMetadata, validatePayloadLength } from './validator.js';
 
 let SERVICE_START = null;
+const ipLookupCache = new Map();
+const IP_LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function cacheGet(cache, key) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function cacheSet(cache, key, value) {
+  cache.set(key, { value, expiresAt: Date.now() + IP_LOOKUP_CACHE_TTL_MS });
+}
 
 export function getSafeIpInfo(ipinfo) {
   return ipinfo && typeof ipinfo === 'object' ? ipinfo : {};
+}
+
+export async function resolveFastIpInfo(target, timeoutMs = 400) {
+  const cleanTarget = String(target || '').trim();
+  if (!cleanTarget) return {};
+
+  const cached = cacheGet(ipLookupCache, cleanTarget);
+  if (cached) return getSafeIpInfo(cached);
+
+  const lookupPromise = ipLookup(cleanTarget);
+  const result = await Promise.race([
+    lookupPromise.then((data) => ({ data, timedOut: false })),
+    new Promise((resolve) => setTimeout(() => resolve({ data: null, timedOut: true }), timeoutMs))
+  ]);
+
+  if (result?.data) {
+    return getSafeIpInfo(result.data);
+  }
+
+  void lookupPromise.catch(() => {});
+  return {};
 }
 
 function isPowerSavingEnabled(value) {
@@ -24,10 +61,16 @@ function isPowerSavingEnabled(value) {
   return Boolean(value);
 }
 
-async function ipLookup(ipOrHost) {
+export async function ipLookup(ipOrHost) {
+  const target = String(ipOrHost || '').trim();
+  if (!target) return null;
+
+  const cached = cacheGet(ipLookupCache, target);
+  if (cached) return cached;
+
   try {
     const lookupUrlTemplate = LOOKUP_SERVICES.IP_LOOKUP_URLS[0] || APP_DEFAULTS.IP_LOOKUP_FALLBACK_URL;
-    const lookupUrl = lookupUrlTemplate.replace('{target}', encodeURIComponent(ipOrHost));
+    const lookupUrl = lookupUrlTemplate.replace('{target}', encodeURIComponent(target));
     const res = await withTimeout(
       fetch(lookupUrl),
       TIMEOUT_CONFIG.EXTERNAL_LOOKUP_TIMEOUT_MS,
@@ -35,7 +78,10 @@ async function ipLookup(ipOrHost) {
     );
     if (!res.ok) return null;
     const data = await res.json();
-    if (data && data.status === 'success') return data;
+    if (data && data.status === 'success') {
+      cacheSet(ipLookupCache, target, data);
+      return data;
+    }
     return null;
   } catch (e) {
     console.warn(`IP lookup failed for ${ipOrHost}: ${e.message}`);
@@ -920,7 +966,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     const payloadBlacklists = getPayloadBlacklists();
     const [ipinfo, blacklistRows] = await Promise.all([
-      ipLookup(record.target),
+      resolveFastIpInfo(record.target),
       Vault.listBlacklist(env)
     ]);
     const blacklistTargets = [
