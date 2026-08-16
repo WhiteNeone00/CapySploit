@@ -4,6 +4,15 @@ import { jsonResponse, makePolishedError } from '../src/response.js';
 import { countUserDailyAttacks, ensureTables, getUserWarningSummary, recordUserWarning, setSystemSetting, syncMethodsFromPayload, updateMethod, getMethod } from '../src/vault-db.js';
 import { logAuditAction } from '../src/admin.js';
 import { getCachedSystemSetting } from '../src/helpers.js';
+import { isMethodPermittedForUser } from '../src/policy.js';
+
+test('disabled methods are rejected even when the user otherwise qualifies', () => {
+  const user = { username: 'alice', api: true, vip: true };
+  const result = isMethodPermittedForUser(user, { enabled: false, name: 'http' });
+
+  assert.equal(result.allowed, false);
+  assert.match(result.reason, /disabled/i);
+});
 
 test('counts attacks by calendar day instead of a rolling 24h window', async () => {
   const DB = {

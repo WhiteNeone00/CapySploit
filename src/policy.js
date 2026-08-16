@@ -2,6 +2,11 @@
 export function isMethodPermittedForUser(user, methodMeta) {
   if (!methodMeta) return { allowed: true, reason: 'default' };
 
+  const enabled = methodMeta.enabled;
+  if (enabled === false || enabled === 0 || enabled === '0') {
+    return { allowed: false, reason: 'method disabled' };
+  }
+
   const roleFlags = {
     holder: Boolean(user?.holder),
     vip: Boolean(user?.vip),
