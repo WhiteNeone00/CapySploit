@@ -10,6 +10,10 @@ import { isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget,
 
 let SERVICE_START = null;
 
+export function getSafeIpInfo(ipinfo) {
+  return ipinfo && typeof ipinfo === 'object' ? ipinfo : {};
+}
+
 function isPowerSavingEnabled(value) {
   if (value === undefined || value === null || value === '') return true;
   if (typeof value === 'string') {
@@ -277,18 +281,32 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   Object.assign(ALLOWED_METHODS, METHOD_ALIASES);
 
   if (endpoint === 'network_statistics') {
-    const users = await Vault.listUsers(env);
+    // Batch all DB queries in parallel instead of sequential
+    const [
+      users,
+      ongoing,
+      attacksToday,
+      vipUsers,
+      holderUsers,
+      resellerUsers,
+      verifiedDiscordUsers,
+      maintenanceMode,
+      attacksDisabled
+    ] = await Promise.all([
+      Vault.listUsers(env),
+      Vault.countOngoing(env),
+      Vault.countLogsToday(env),
+      Vault.countUsersByFlag(env, 'vip'),
+      Vault.countUsersByFlag(env, 'holder'),
+      Vault.countUsersByFlag(env, 'reseller'),
+      Vault.countVerifiedDiscordLinks(env),
+      Vault.getMaintenanceMode(env),
+      Vault.getAttacksDisabled(env)
+    ]);
+
     const total = users.length;
     const activeUsers = users.filter((user) => !user.suspended).length;
     const suspendedUsers = users.filter((user) => user.suspended).length;
-    const ongoing = await Vault.countOngoing(env);
-    const attacksToday = await Vault.countLogsToday(env);
-    const vipUsers = await Vault.countUsersByFlag(env, 'vip');
-    const holderUsers = await Vault.countUsersByFlag(env, 'holder');
-    const resellerUsers = await Vault.countUsersByFlag(env, 'reseller');
-    const verifiedDiscordUsers = await Vault.countVerifiedDiscordLinks(env);
-    const maintenanceMode = await Vault.getMaintenanceMode(env);
-    const attacksDisabled = await Vault.getAttacksDisabled(env);
     const healthStatus = suspendedUsers > 0 || ongoing > 0 ? 'degraded' : 'stable';
 
     return jsonResponse({
@@ -339,32 +357,40 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
   if (endpoint === 'graph') {
     if (!SERVICE_START) SERVICE_START = Date.now();
-    const ongoing = await Vault.countOngoing(env);
+    
+    const payloadMethods = getPayloadMethods();
+    const methodsWithSlots = payloadMethods.filter((m) => Number(m.max_slots || 0) > 0);
+    const methodNames = methodsWithSlots.map((m) => m.name.toLowerCase());
+    
+    // Batch all queries in parallel
+    const [ongoing, maintenance, methodSlotCounts] = await Promise.all([
+      Vault.countOngoing(env),
+      Vault.getMaintenanceMode(env),
+      Vault.countMethodsOngoingBatch(env, methodNames)
+    ]);
+    
     const totalSlots = GLOBAL_API_SLOTS;
     const usedSlots = ongoing;
     const slotBar = formatSlotBar(usedSlots, totalSlots);
-    const maintenance = await Vault.getMaintenanceMode(env);
     const lastMaintenance = env.LAST_MAINTENANCE || env.LAST_MAINTENANCE_AT || null;
     const uptimeMs = Date.now() - SERVICE_START;
     const uptimeSeconds = Math.floor(uptimeMs / 1000);
     const uptimeHours = Math.floor(uptimeSeconds / 3600);
     const uptimeMinutes = Math.floor((uptimeSeconds % 3600) / 60);
     const uptime = `${uptimeHours}h ${uptimeMinutes}m`;
-    const payloadMethods = getPayloadMethods();
-    const methodSlots = [];
-
-    for (const method of payloadMethods) {
+    
+    // Build method slots with cached counts
+    const methodSlots = methodsWithSlots.map((method) => {
       const maxSlots = Number(method.max_slots || 0);
-      if (!maxSlots) continue;
-      const methodUsed = await Vault.countMethodOngoing(env, method.name.toLowerCase());
-      methodSlots.push({
+      const methodUsed = methodSlotCounts[method.name.toLowerCase()] || 0;
+      return {
         method: method.name,
         total: maxSlots,
         used: methodUsed,
         percent: maxSlots ? Math.min(100, Math.round((methodUsed / maxSlots) * 100)) : 0,
         bar: formatSlotBar(methodUsed, maxSlots)
-      });
-    }
+      };
+    });
 
     const planMethodAccess = { free: [], vip: [], holder: [], vip_or_holder: [] };
     for (const method of payloadMethods) {
@@ -901,8 +927,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       ...(payloadBlacklists?.Blacklists_Targets || []),
       ...(blacklistRows || []).map(item => item.target)
     ];
+    const safeIpInfo = getSafeIpInfo(ipinfo);
     const targetBlocked = isBlacklistedTarget(record.target, blacklistTargets)
-      || isBlacklistedByMetadata(ipinfo, payloadBlacklists);
+      || isBlacklistedByMetadata(safeIpInfo, payloadBlacklists);
     if (targetBlocked) {
       // Check if user has bypass_blacklist enabled
       const hasBypassBlacklist = Boolean(user?.bypass_blacklist || false);
@@ -910,9 +937,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         const warningSummary = await Vault.recordUserWarning(env, user.username, `blacklisted target ${record.target}`);
         return makePolishedError('blacklisted target', 403, {
           target: record.target,
-          target_asn: ipinfo.as || ipinfo.org || null,
-          target_country: ipinfo.country || null,
-          target_country_code: ipinfo.countryCode || null,
+          target_asn: safeIpInfo.as || safeIpInfo.org || null,
+          target_country: safeIpInfo.country || null,
+          target_country_code: safeIpInfo.countryCode || null,
           warn_status: warningSummary.warn_status,
           suspended: Boolean(warningSummary.suspended || user.suspended),
           hint: warningSummary.suspended
@@ -1021,15 +1048,15 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         threads: Number(record.threads || 0),
         rps: Number(record.rps || 0),
         geo: record.geo || 'full',
-        ...(ipinfo.as || ipinfo.org ? { target_asn: ipinfo.as || ipinfo.org } : {}),
-        ...(ipinfo.city ? { target_city: ipinfo.city } : {}),
-        ...(ipinfo.country ? { target_country: ipinfo.country } : {}),
-        ...(ipinfo.countryCode ? { target_country_code: ipinfo.countryCode } : {}),
-        ...(ipinfo.isp ? { target_isp: ipinfo.isp } : {}),
-        ...(ipinfo.org ? { target_org: ipinfo.org } : {}),
-        ...(ipinfo.regionName || ipinfo.region ? { target_region: ipinfo.regionName || ipinfo.region } : {}),
-        ...(ipinfo.timezone ? { target_timezone: ipinfo.timezone } : {}),
-        ...(ipinfo.zip ? { target_zip: ipinfo.zip } : {}),
+        ...(safeIpInfo.as || safeIpInfo.org ? { target_asn: safeIpInfo.as || safeIpInfo.org } : {}),
+        ...(safeIpInfo.city ? { target_city: safeIpInfo.city } : {}),
+        ...(safeIpInfo.country ? { target_country: safeIpInfo.country } : {}),
+        ...(safeIpInfo.countryCode ? { target_country_code: safeIpInfo.countryCode } : {}),
+        ...(safeIpInfo.isp ? { target_isp: safeIpInfo.isp } : {}),
+        ...(safeIpInfo.org ? { target_org: safeIpInfo.org } : {}),
+        ...(safeIpInfo.regionName || safeIpInfo.region ? { target_region: safeIpInfo.regionName || safeIpInfo.region } : {}),
+        ...(safeIpInfo.timezone ? { target_timezone: safeIpInfo.timezone } : {}),
+        ...(safeIpInfo.zip ? { target_zip: safeIpInfo.zip } : {}),
         username: user.username || qv.username || 'anon',
         max_time: Number(user.max_time || 60),
         max_concurrents: Number(user.max_concurrents || 1),

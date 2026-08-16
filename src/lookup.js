@@ -2,40 +2,91 @@
 import { jsonResponse, parseQuery, routeNotFound } from './response.js';
 import { LOOKUP_SERVICES, APP_DEFAULTS } from './config.js';
 
+// Simple in-memory cache for MC lookups (TTL 5 minutes)
+const mcLookupCache = new Map();
+const ipLookupCache = new Map();
+const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function cacheGet(cache, key) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function cacheSet(cache, key, value) {
+  cache.set(key, { value, expiresAt: Date.now() + LOOKUP_CACHE_TTL_MS });
+}
+
 async function ipLookup(ipOrHost) {
   const target = String(ipOrHost || '').trim();
   if (!target) return null;
 
+  // Check cache first
+  const cached = cacheGet(ipLookupCache, target);
+  if (cached) return cached;
+
   const lookupUrls = (LOOKUP_SERVICES.IP_LOOKUP_URLS || []).map((template) => template.replace('{target}', encodeURIComponent(target)));
 
-  for (const url of lookupUrls) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data && data.status === 'success') return data;
-    } catch (e) {
-      console.warn('ip lookup provider failed:', e.message);
+  // Fetch all providers in parallel and use the first successful one
+  const results = await Promise.allSettled(
+    lookupUrls.map(async (url) => {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (data && data.status === 'success') return data;
+      } catch (e) {
+        console.warn('ip lookup provider failed:', url, e.message);
+      }
+      return null;
+    })
+  );
+
+  for (const result of results) {
+    if (result.status === 'fulfilled' && result.value) {
+      cacheSet(ipLookupCache, target, result.value);
+      return result.value;
     }
   }
   return null;
 }
 
 async function fetchMinecraftServer(addr) {
+  const cacheKey = `mc:${addr}`;
+  
+  // Check cache first
+  const cached = cacheGet(mcLookupCache, cacheKey);
+  if (cached) return cached;
+
   const candidates = (LOOKUP_SERVICES.MINECRAFT_LOOKUP_URLS || []).map((template) => template.replace('{target}', encodeURIComponent(addr)));
 
-  for (const url of candidates) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (url.includes('mcstatus.io')) {
-        if (data && data.online === true) return data;
-      } else if (data && data.online === true && (data?.ip || data?.hostname || data?.port)) {
-        return data;
+  // Fetch all MC provider URLs in parallel and use the first successful one
+  const results = await Promise.allSettled(
+    candidates.map(async (url) => {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (url.includes('mcstatus.io')) {
+          if (data && data.online === true) return { ...data, _provider: 'mcstatus' };
+        } else if (data && data.online === true && (data?.ip || data?.hostname || data?.port)) {
+          return { ...data, _provider: url };
+        }
+      } catch (e) {
+        console.warn('mc provider failed:', url, e.message);
       }
-    } catch (e) {
-      console.warn('mc provider failed:', url, e.message);
+      return null;
+    })
+  );
+
+  for (const result of results) {
+    if (result.status === 'fulfilled' && result.value) {
+      cacheSet(mcLookupCache, cacheKey, result.value);
+      return result.value;
     }
   }
 
@@ -80,7 +131,12 @@ export async function lookupHandler(parts, request, env, requestId, logger, requ
           hostname: data.host || data.hostname || addr
         }
         : data;
-      return jsonResponse({ error: false, server: normalized, ip_info: normalized?.ip ? await ipLookup(normalized.ip) : null });
+      
+      // Fetch IP info in parallel with MC server data
+      const ipInfoPromise = normalized?.ip ? ipLookup(normalized.ip) : Promise.resolve(null);
+      const ip_info = await ipInfoPromise;
+      
+      return jsonResponse({ error: false, server: normalized, ip_info });
     } catch (e) {
       return jsonResponse({ error: true, message: 'mc lookup failed' }, 502);
     }

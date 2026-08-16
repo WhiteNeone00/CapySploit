@@ -634,6 +634,39 @@ export async function countMethodOngoing(env, method) {
   return Number(res?.results?.[0]?.c || 0);
 }
 
+export async function countMethodsOngoingBatch(env, methods = []) {
+  if (!methods || methods.length === 0) return {};
+  const DB = getDB(env);
+  if (!DB) return {};
+  
+  try {
+    await cleanupOngoing(env);
+    // Single query to get all method counts at once
+    const res = await DB.prepare(`
+      SELECT method, COUNT(*) AS c 
+      FROM ongoing_attacks 
+      WHERE status='running' AND datetime(expires_at) > datetime('now')
+      GROUP BY method
+    `).all();
+    
+    const counts = {};
+    (res?.results || []).forEach((row) => {
+      counts[String(row.method || '').toLowerCase()] = Number(row.c || 0);
+    });
+    
+    // Fill in missing methods with 0
+    methods.forEach((method) => {
+      const key = String(method || '').toLowerCase();
+      if (!(key in counts)) counts[key] = 0;
+    });
+    
+    return counts;
+  } catch (error) {
+    console.error('Error in countMethodsOngoingBatch:', error.message);
+    return {};
+  }
+}
+
 export async function getLogs(env, username) {
   const DB = getDB(env);
   if (!DB) return [];

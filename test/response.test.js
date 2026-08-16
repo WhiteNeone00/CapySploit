@@ -5,7 +5,20 @@ import { countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, re
 import { logAuditAction } from '../src/admin.js';
 import { getCachedSystemSetting, invalidateMethodCache, invalidateUserCache } from '../src/helpers.js';
 import { isMethodPermittedForUser } from '../src/policy.js';
-import { fanOutMethodApiLinks } from '../src/api.js';
+import { fanOutMethodApiLinks, getSafeIpInfo } from '../src/api.js';
+
+test('null IP metadata is treated as an empty object instead of crashing', () => {
+  const result = getSafeIpInfo(null);
+  assert.deepEqual(result, {});
+  assert.doesNotThrow(() => {
+    const meta = getSafeIpInfo(null);
+    const payload = {
+      ...(meta.as || meta.org ? { target_asn: meta.as || meta.org } : {}),
+      ...(meta.country ? { target_country: meta.country } : {})
+    };
+    assert.deepEqual(payload, {});
+  });
+});
 
 test('disabled methods are rejected even when the user otherwise qualifies', () => {
   const user = { username: 'alice', api: true, vip: true };
