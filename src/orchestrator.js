@@ -123,17 +123,16 @@ export async function handleRequest(request, env) {
     const uptimeStartedMs = Date.parse(uptimeStartedAt);
     const uptime = formatUptime(Number.isFinite(uptimeStartedMs) ? uptimeStartedMs : Date.now());
 
-    if (isMaintenance && parts[0] !== 'admin') {
+    const attackRouteInMaintenance = isMaintenance && parts[0] === 'api' && parts[1] === 'attack';
+    if (attackRouteInMaintenance) {
       logger.info('maintenance_mode_active', { endpoint: parts[0] });
       return jsonResponse({
         error: true,
-        message: 'Maintenance mode is active. The service is temporarily unavailable while scheduled maintenance is in progress.',
+        message: 'Attacks are temporarily disabled while maintenance mode is active.',
         status: 'maintenance',
         maintenance_mode: true,
         service: serviceName,
-        available: ['admin'],
-        endpoints: { admin: '/admin/<action>' },
-        hint: 'Only administrative routes are available during maintenance. Please try again later.'
+        hint: 'API status, plans, methods, and other read-only endpoints remain available.'
       }, 503, { service: serviceName, version: apiVersion, requestId });
     }
 
