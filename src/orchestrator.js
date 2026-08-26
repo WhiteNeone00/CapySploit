@@ -157,8 +157,8 @@ export async function handleRequest(request, env) {
       }, isMaintenance ? 503 : 200, { service: serviceName, version: apiVersion, requestId });
     }
 
-    // Database setup is explicit through /admin/init; avoid blocking normal requests with migrations.
-    if (!dbInitialized && parts[0] === 'admin' && parts[1] === 'init' && parts[2] !== 'status') {
+    // Bootstrap once per worker, then repair the plans table if it was removed externally.
+    if (!dbInitialized) {
       initializationPromise ||= initializeAll(env);
       const currentInitialization = initializationPromise;
       try {
@@ -168,6 +168,16 @@ export async function handleRequest(request, env) {
         if (initializationPromise === currentInitialization) initializationPromise = null;
       }
       logger.info('database_initialized');
+    }
+
+    if (env?.capi_db) {
+      try {
+        const plansTable = await env.capi_db.prepare('SELECT name FROM plans LIMIT 1').all();
+        if (!plansTable) throw new Error('plans table check failed');
+      } catch (error) {
+        await Vault.ensureTables(env);
+        await Vault.seedPlans(env);
+      }
     }
 
     // Queue processing disabled by user request; direct execution is preferred.

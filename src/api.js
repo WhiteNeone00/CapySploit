@@ -928,9 +928,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     }
 
     // Fetch independent method and service state together.
-    const [attacksDisabled, methodsCatalog] = await Promise.all([
+    const [attacksDisabled, methodRecord] = await Promise.all([
       Vault.getAttacksDisabled(env),
-      Vault.listMethods(env)
+      Vault.getMethod(env, record.method)
     ]);
     if (attacksDisabled) {
       return makePolishedError('Attacks are currently disabled', 503, { hint: 'All attacks have been disabled by administrators. Please try again later.' });
@@ -938,13 +938,11 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     if (!ALLOWED_METHODS[record.method]) return makePolishedError(`method ${record.method} is not supported`, 400, { hint: 'Use one of the supported attack methods listed by the methods catalog.' });
     const expects = ALLOWED_METHODS[record.method];
-    const payloadMethods = getPayloadMethods();
-    const payloadMethodMap = new Map((payloadMethods || []).map((item) => [String(item?.name || '').toLowerCase(), item]));
-    const methodNames = (methodsCatalog || []).map(m => (m.name || '').toLowerCase());
-    const catalogMethodMap = new Map((methodsCatalog || []).map((item) => [String(item?.name || '').toLowerCase(), item]));
+    const payloadMeta = (getPayloadMethods() || []).find((item) => String(item?.name || '').toLowerCase() === record.method) || null;
+    let dbMethodMeta = methodRecord;
 
-    // Sync payload methods if any are missing from the database
-    if (!methodNames.includes(record.method)) {
+    // Sync once if this method is missing from the database, then read only that method.
+    if (!dbMethodMeta) {
       try {
         const syncResult = await Vault.syncMethodsFromPayload(env);
         if (syncResult?.error) {
@@ -953,10 +951,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       } catch (e) {
         return makePolishedError(`Method sync error: ${e.message}`, 500, { hint: 'Could not verify method availability.' });
       }
+      dbMethodMeta = await Vault.getMethod(env, record.method);
     }
 
-    const payloadMeta = payloadMethodMap.get(record.method) || null;
-    const dbMethodMeta = catalogMethodMap.get(record.method) || null;
     const targetType = String((dbMethodMeta?.target_type || payloadMeta?.target_type || expects || 'ip')).toLowerCase();
     const targetProvided = String(record.target || '').trim();
 
@@ -989,7 +986,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     const payloadBlacklists = getPayloadBlacklists();
     const [ipinfo, blacklistRows] = await Promise.all([
-      resolveFastIpInfo(record.target),
+      resolveFastIpInfo(record.target, 150),
       Vault.listBlacklist(env)
     ]);
     const blacklistTargets = [
@@ -1090,8 +1087,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       }
     }
 
-    await Vault.addLog(env, record);
-    await Vault.addOngoingAttack(env, record);
+    await Promise.all([
+      Vault.addLog(env, record),
+      Vault.addOngoingAttack(env, record)
+    ]);
 
     void fanOutMethodApiLinks(methodMeta, record).catch(() => {});
 
@@ -1144,7 +1143,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     };
 
     releaseAttackSlots(record.username);
-    await Vault.updateUserLastRequestTime(env, record.username, request.headers?.get?.('cf-connecting-ip') || null);
+    void Vault.updateUserLastRequestTime(env, record.username, request.headers?.get?.('cf-connecting-ip') || null).catch(() => {});
     return jsonResponse(responseBody, 200, { service: serviceName });
   }
 

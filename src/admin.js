@@ -319,8 +319,14 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       bypass_slots: Number(q.bypass_slots || 0),
       suspended: Number(q.suspended || 0)
     };
+
+    const requestedPlan = q.plan_name || q.plan || null;
+    if (requestedPlan && !(await Vault.getPlan(env, requestedPlan))) {
+      return makePolishedError('plan not found', 404, { hint: `The plan '${requestedPlan}' does not exist.` });
+    }
     
     await Vault.saveUser(env, user);
+    if (requestedPlan) user = await Vault.applyPlanToUser(env, user.username, requestedPlan);
     
     // Log audit trail for user creation
     const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
@@ -427,6 +433,26 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     u[fieldName] = isNaN(Number(fieldValue)) ? fieldValue : Number(fieldValue);
     await Vault.saveUser(env, u);
     return jsonResponse({ error: false, message: `User '${q.user_to_edit}' field '${fieldName}' updated successfully.`, field: fieldName, new_value: u[fieldName] });
+  }
+
+  if (endpoint === 'assign_plan' || endpoint === 'set_plan' || endpoint === 'give_plan') {
+    const targetUsername = q.user_to_edit || q.username_to_assign || q.user || '';
+    const planName = q.plan_name || q.plan || '';
+    if (!targetUsername || !planName) {
+      return makePolishedError('missing user or plan', 400, { hint: 'Provide user_to_edit and plan_name.' });
+    }
+
+    const user = await Vault.getUser(env, targetUsername);
+    if (!user) return makePolishedError('user not found', 404, { hint: 'The user does not exist.' });
+    const plan = await Vault.getPlan(env, planName);
+    if (!plan) return makePolishedError('plan not found', 404, { hint: `The plan '${planName}' does not exist.` });
+
+    const updatedUser = await Vault.applyPlanToUser(env, targetUsername, plan.name);
+    return jsonResponse({
+      error: false,
+      message: `Plan '${plan.name}' assigned to user '${targetUsername}'.`,
+      user: updatedUser
+    });
   }
 
   if (endpoint === 'delete_user') {
@@ -902,7 +928,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
   if (endpoint === 'edit_method') {
     // ENDPOINT: /admin/edit_method - Configure which ranks/plans can use a method
     // Auth: Requires valid admin credentials
-    // Parameters: method_name (required), default_access/vip/reseller/admin/max_time/raw_access/star_access/private_access (0 or 1 / integer)
+    // Parameters: method_name (required), default_access/vip/reseller/admin/max_time/raw_access/star_access/botnet_access/private_access (0 or 1 / integer)
     // Returns: Updated method details with access config
     
     if (!q.method_name) {
@@ -921,10 +947,11 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     if (q.max_time !== undefined) updates.max_time = q.max_time === null || q.max_time === '' ? null : Number(q.max_time);
     if (q.raw_access !== undefined) updates.raw_access = Number(q.raw_access) ? 1 : 0;
     if (q.star_access !== undefined) updates.star_access = Number(q.star_access) ? 1 : 0;
+    if (q.botnet_access !== undefined) updates.botnet_access = Number(q.botnet_access) ? 1 : 0;
     if (q.private_access !== undefined) updates.private_access = Number(q.private_access) ? 1 : 0;
     
     if (Object.keys(updates).length === 0) {
-      return makePolishedError('no updates provided', 400, { hint: 'Provide at least one access level or time value (default_access, vip, reseller, admin, max_time, raw_access, star_access, private_access) set appropriately.' });
+      return makePolishedError('no updates provided', 400, { hint: 'Provide at least one access level or time value (default_access, vip, reseller, admin, max_time, raw_access, star_access, botnet_access, private_access) set appropriately.' });
     }
     
     try {
@@ -946,6 +973,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
           max_time: method.max_time ?? null,
           raw_access: method.raw_access,
           star_access: method.star_access,
+          botnet_access: method.botnet_access,
           private_access: method.private_access
         }
       });

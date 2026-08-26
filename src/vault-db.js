@@ -1,7 +1,7 @@
 import { DEFAULT_PAYLOAD } from '../payload.js';
 import { DEFAULT_ROOT_CREDENTIALS } from './config.js';
 
-import { USER_LIMITS } from './config.js';
+import { DEFAULT_PLANS, USER_LIMITS } from './config.js';
 import {
   getCachedMethods,
   getCachedUser,
@@ -86,19 +86,29 @@ export async function ensureTables(env) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE,
       description TEXT,
+
+
+      target_type TEXT DEFAULT 'ip',
+      default_port INTEGER DEFAULT 80,
+
       price REAL DEFAULT 0,
+      default_port INTEGER DEFAULT 80,
+
       max_time INTEGER DEFAULT 60,
-      cooldown INTEGER DEFAULT 10,
       max_concurrents INTEGER DEFAULT 1,
+
       days_active INTEGER DEFAULT 5,
-      max_daily_attacks INTEGER DEFAULT 100,
       api INTEGER DEFAULT 0,
+
+
       raw_access INTEGER DEFAULT 0,
-      star_access INTEGER DEFAULT 0,
+      botnet_access INTEGER DEFAULT 0,
+
       private_access INTEGER DEFAULT 0,
       bypass_power INTEGER DEFAULT 0,
       bypass_anti_spam INTEGER DEFAULT 0,
       bypass_blacklist INTEGER DEFAULT 0,
+
       vip INTEGER DEFAULT 0,
       holder INTEGER DEFAULT 0,
       reseller INTEGER DEFAULT 0,
@@ -107,57 +117,48 @@ export async function ensureTables(env) {
       updated_at TEXT
     )`).run();
     
-    // Seed default plans if table is empty
-    const plansCheck = await DB.prepare('SELECT COUNT(*) AS c FROM plans').all();
-    if (!plansCheck.results || plansCheck.results[0]?.c === 0) {
-      const defaultPlans = [
-        { name: 'Default', description: 'Basic plan', price: 0, max_time: 60, cooldown: 10, max_concurrents: 1, max_daily_attacks: 100, api: 1, vip: 0, holder: 0 },
-        { name: 'VIP', description: 'Premium plan', price: 10, max_time: 300, cooldown: 5, max_concurrents: 3, max_daily_attacks: 500, api: 1, vip: 1, holder: 0 },
-        { name: 'Holder', description: 'High-tier plan', price: 20, max_time: 500, cooldown: 3, max_concurrents: 5, max_daily_attacks: 1000, api: 1, raw_access: 1, vip: 0, holder: 1 },
-        { name: 'Raw', description: 'Unlimited access', price: 50, max_time: 9999, cooldown: 1, max_concurrents: 99, max_daily_attacks: 99999, api: 1, raw_access: 1, star_access: 1, vip: 1, holder: 1 }
-      ];
-      for (const plan of defaultPlans) {
-        await DB.prepare(
-          'INSERT INTO plans (name, description, price, max_time, cooldown, max_concurrents, max_daily_attacks, api, raw_access, star_access, vip, holder, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-        ).bind(
-          plan.name, plan.description, plan.price, plan.max_time, plan.cooldown, plan.max_concurrents, plan.max_daily_attacks,
-          plan.api, plan.raw_access || 0, plan.star_access || 0, plan.vip, plan.holder, new Date().toISOString()
-        ).run();
-      }
-    }
-
     await DB.prepare(`CREATE TABLE IF NOT EXISTS users (
       username TEXT PRIMARY KEY,
       password TEXT,
+      plan_id INTEGER,
+      created_by TEXT,
+      created_at TEXT,
+
       admin INTEGER DEFAULT 0,
       reseller INTEGER DEFAULT 0,
       vip INTEGER DEFAULT 0,
       holder INTEGER DEFAULT 0,
       api INTEGER DEFAULT 0,
-      plan_id INTEGER,
+
       max_time INTEGER DEFAULT 60,
       cooldown INTEGER DEFAULT 10,
       max_concurrents INTEGER DEFAULT 1,
       max_daily_attacks INTEGER DEFAULT 100,
-      created_by TEXT,
-      created_at TEXT,
-      last_request_time TEXT,
-      expiry_unix INTEGER,
+
+      raw_access INTEGER DEFAULT 0,
+      star_access INTEGER DEFAULT 0,
+      botnet_access INTEGER DEFAULT 0,
+      private_access INTEGER DEFAULT 0,
+      bypass_power INTEGER DEFAULT 0,
       bypass_slots INTEGER DEFAULT 0,
+
       suspended INTEGER DEFAULT 0,
-      suspend_reason TEXT,
-      suspended_by TEXT,
       power_saving INTEGER DEFAULT 1,
       bypass_anti_spam INTEGER DEFAULT 0,
       bypass_blacklist INTEGER DEFAULT 0,
-      raw_access INTEGER DEFAULT 0,
-      star_access INTEGER DEFAULT 0,
-      private_access INTEGER DEFAULT 0,
+
+      expiry_unix INTEGER,
       expires_at TEXT,
+
       last_ip TEXT,
       whitelisted_ip TEXT,
+
+      last_request_time TEXT,
       warning_count INTEGER DEFAULT 0,
-      warning_reset_at TEXT
+      warning_reset_at TEXT,
+
+      suspend_reason TEXT,
+      suspended_by TEXT
     )`).run();
 
     await DB.prepare(`CREATE TABLE IF NOT EXISTS logs (
@@ -175,18 +176,25 @@ export async function ensureTables(env) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE,
       description TEXT,
+
       enabled INTEGER DEFAULT 1,
       target_type TEXT DEFAULT 'ip',
+      default_port INTEGER DEFAULT 80,
+
       default_access INTEGER DEFAULT 0,
       vip INTEGER DEFAULT 1,
       reseller INTEGER DEFAULT 1,
       admin INTEGER DEFAULT 1,
+
       max_slots INTEGER DEFAULT 0,
-      default_port INTEGER DEFAULT 80,
+      max_concurrents INTEGER DEFAULT 5,
       max_time INTEGER,
+
       raw_access INTEGER DEFAULT 0,
       star_access INTEGER DEFAULT 0,
+      botnet_access INTEGER DEFAULT 0,
       private_access INTEGER DEFAULT 0,
+
       created_at TEXT,
       updated_at TEXT
     )`).run();
@@ -270,15 +278,19 @@ export async function ensureTables(env) {
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN whitelisted_ip TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN raw_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN star_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE users ADD COLUMN botnet_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN private_access INTEGER DEFAULT 0');
+      await addColumn(DB, 'ALTER TABLE users ADD COLUMN bypass_power INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN expires_at TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN warning_count INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN warning_reset_at TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN api INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN price REAL DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN lifetime_price REAL DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN days_active INTEGER DEFAULT 5');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN raw_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN star_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN botnet_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN bypass_power INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN bypass_anti_spam INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN bypass_blacklist INTEGER DEFAULT 0');
@@ -291,9 +303,11 @@ export async function ensureTables(env) {
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN target_type TEXT DEFAULT "ip"');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN default_port INTEGER DEFAULT 80');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN max_time INTEGER');
-    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN max_concurrents INTEGER DEFAULT 1');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN max_concurrents INTEGER DEFAULT 5');
+    await DB.prepare('UPDATE methods SET max_concurrents = 5 WHERE max_concurrents IS NULL OR max_concurrents = 1').run();
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN raw_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN star_access INTEGER DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN botnet_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN private_access INTEGER DEFAULT 0');
 
     try {
@@ -342,6 +356,9 @@ export async function ensureTables(env) {
       if (!methodColumnNames.includes('star_access')) {
         await addColumn(DB, 'ALTER TABLE methods ADD COLUMN star_access INTEGER DEFAULT 0');
       }
+      if (!methodColumnNames.includes('botnet_access')) {
+        await addColumn(DB, 'ALTER TABLE methods ADD COLUMN botnet_access INTEGER DEFAULT 0');
+      }
       if (!methodColumnNames.includes('private_access')) {
         await addColumn(DB, 'ALTER TABLE methods ADD COLUMN private_access INTEGER DEFAULT 0');
       }
@@ -357,7 +374,7 @@ async function fetchUserFromDatabase(DB, username) {
   const explicit = await DB.prepare(`SELECT
     username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,
     created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,
-    power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,private_access,expires_at,
+    power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,expires_at,
     last_ip,whitelisted_ip,warning_count,warning_reset_at
     FROM users WHERE username = ?`).bind(username).all();
   if (explicit?.results?.[0]) return explicit.results[0];
@@ -388,7 +405,7 @@ export async function getUserBatch(env, usernames = []) {
     const explicit = await DB.prepare(`SELECT
       username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,
       created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,
-      power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,private_access,expires_at,
+      power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,expires_at,
       last_ip,whitelisted_ip,warning_count,warning_reset_at
       FROM users WHERE username IN (${placeholders})`).bind(...usernames).all();
     const map = {};
@@ -416,8 +433,8 @@ export async function saveUser(env, user) {
   const storedPassword = String(user.password || '');
   try {
     await DB.prepare(`INSERT OR REPLACE INTO users (
-      username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,private_access,expires_at,last_ip,whitelisted_ip,warning_count,warning_reset_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+      username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,expires_at,last_ip,whitelisted_ip,warning_count,warning_reset_at,suspend_reason,suspended_by
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
       user.username,
       storedPassword,
       user.admin ? 1 : 0,
@@ -436,19 +453,21 @@ export async function saveUser(env, user) {
       user.expiry_unix || 0,
       user.bypass_slots ? 1 : 0,
       user.suspended ? 1 : 0,
-      user.suspend_reason || null,
-      user.suspended_by || null,
       user.power_saving !== undefined ? (user.power_saving ? 1 : 0) : 1,
       user.bypass_anti_spam ? 1 : 0,
       user.bypass_blacklist ? 1 : 0,
       user.raw_access ? 1 : 0,
       user.star_access ? 1 : 0,
+      user.botnet_access ? 1 : 0,
       user.private_access ? 1 : 0,
+      user.bypass_power ? 1 : 0,
       user.expires_at || null,
       user.last_ip || null,
       user.whitelisted_ip || null,
       Number(user.warning_count || 0),
-      user.warning_reset_at || now
+      user.warning_reset_at || now,
+      user.suspend_reason || null,
+      user.suspended_by || null
     ).run();
     invalidateUserCache(user.username);
     invalidateSettingsCache();
@@ -474,7 +493,7 @@ export async function deleteUser(env, username) {
 export async function listUsers(env) {
   const DB = getDB(env);
   if (!DB) return [];
-  const res = await DB.prepare('SELECT username,admin,vip,reseller,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,expiry_unix,bypass_slots,suspended,last_request_time,last_ip,whitelisted_ip,raw_access,star_access,private_access,warning_count,warning_reset_at FROM users').all();
+  const res = await DB.prepare('SELECT username,admin,vip,reseller,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,expiry_unix,bypass_slots,suspended,last_request_time,last_ip,whitelisted_ip,raw_access,star_access,botnet_access,private_access,bypass_power,warning_count,warning_reset_at,suspend_reason,suspended_by FROM users').all();
   return res.results || [];
 }
 
@@ -654,7 +673,6 @@ export async function cleanupOngoing(env) {
 export async function countOngoing(env) {
   const DB = getDB(env);
   if (!DB) return 0;
-  await cleanupOngoing(env);
   const res = await DB.prepare("SELECT COUNT(*) AS c FROM ongoing_attacks WHERE status='running' AND datetime(expires_at) > datetime('now')").all();
   return Number(res?.results?.[0]?.c || 0);
 }
@@ -662,7 +680,6 @@ export async function countOngoing(env) {
 export async function countUserOngoing(env, username) {
   const DB = getDB(env);
   if (!DB) return 0;
-  await cleanupOngoing(env);
   const res = await DB.prepare("SELECT COUNT(*) AS c FROM ongoing_attacks WHERE username = ? AND status='running' AND datetime(expires_at) > datetime('now')").bind(username).all();
   return Number(res?.results?.[0]?.c || 0);
 }
@@ -670,7 +687,6 @@ export async function countUserOngoing(env, username) {
 export async function countMethodOngoing(env, method) {
   const DB = getDB(env);
   if (!DB) return 0;
-  await cleanupOngoing(env);
   const res = await DB.prepare("SELECT COUNT(*) AS c FROM ongoing_attacks WHERE method = ? AND status='running' AND datetime(expires_at) > datetime('now')").bind(method).all();
   return Number(res?.results?.[0]?.c || 0);
 }
@@ -740,7 +756,7 @@ export async function listMethods(env) {
 
   return await getCachedMethods(async () => {
     try {
-      const res = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_time, raw_access, star_access, private_access, created_at FROM methods ORDER BY name ASC').all();
+      const res = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_concurrents, max_time, raw_access, star_access, botnet_access, private_access, created_at FROM methods ORDER BY name ASC').all();
       return res.results || [];
     } catch (error) {
       return [];
@@ -936,7 +952,7 @@ export async function getPlan(env, planName) {
   const DB = getDB(env);
   if (!DB) return null;
   try {
-    const res = await DB.prepare('SELECT * FROM plans WHERE name = ?').bind(planName).all();
+    const res = await DB.prepare('SELECT * FROM plans WHERE LOWER(name) = LOWER(?)').bind(planName).all();
     return res?.results?.[0] || null;
   } catch (error) {
     console.error(`Error getting plan ${planName}:`, error.message);
@@ -980,15 +996,27 @@ export async function createPlan(env, plan) {
     Permissions: normalizePermissions(payload.permissions || payload.Permissions || {})
   });
 
-  await DB.prepare(`INSERT INTO plans (name, description, max_time, cooldown, max_concurrents, days_active, max_daily_attacks, api, permissions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+  await DB.prepare(`INSERT INTO plans (name, description, price, lifetime_price, max_time, cooldown, max_concurrents, days_active, max_daily_attacks, api, raw_access, star_access, botnet_access, private_access, bypass_power, bypass_anti_spam, bypass_blacklist, vip, holder, reseller, permissions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
     payload.name || payload.Name || 'Custom',
     payload.description || payload.Description || '',
+    readNumber(payload.price, 0),
+    readNumber(payload.lifetime_price ?? payload.Lifetime_Price, 0),
     readNumber(payload.max_time ?? payload.Max_Times, 60),
     readNumber(payload.cooldown ?? payload.Cooldown, 10),
     readNumber(payload.max_concurrents ?? payload.Max_Concurrents, 1),
     readNumber(payload.days_active ?? payload.DaysActive, 5),
     readNumber(payload.max_daily_attacks ?? payload.MaxDailyAttacks, 100),
     Boolean(payload.api ?? payload.api_access ?? payload.Api ?? payload.Api_Acces ?? false) ? 1 : 0,
+    Number(payload.raw_access ?? 0) ? 1 : 0,
+    Number(payload.star_access ?? 0) ? 1 : 0,
+    Number(payload.botnet_access ?? 0) ? 1 : 0,
+    Number(payload.private_access ?? 0) ? 1 : 0,
+    Number(payload.bypass_power ?? 0) ? 1 : 0,
+    Number(payload.bypass_anti_spam ?? 0) ? 1 : 0,
+    Number(payload.bypass_blacklist ?? 0) ? 1 : 0,
+    Number(payload.vip ?? 0) ? 1 : 0,
+    Number(payload.holder ?? 0) ? 1 : 0,
+    Number(payload.reseller ?? 0) ? 1 : 0,
     permissions,
     createdAt
   ).run();
@@ -1032,6 +1060,18 @@ export async function updatePlan(env, planName, updates = {}) {
     if (normalized.max_daily_attacks !== undefined || normalized.MaxDailyAttacks !== undefined) {
       fields.push('max_daily_attacks = ?');
       values.push(readNumber(normalized.max_daily_attacks ?? normalized.MaxDailyAttacks, 100));
+    }
+    for (const field of ['raw_access', 'star_access', 'botnet_access', 'private_access', 'bypass_power', 'bypass_anti_spam', 'bypass_blacklist', 'vip', 'holder', 'reseller']) {
+      if (normalized[field] !== undefined) {
+        fields.push(`${field} = ?`);
+        values.push(Number(normalized[field]) ? 1 : 0);
+      }
+    }
+    for (const field of ['price', 'lifetime_price']) {
+      if (normalized[field] !== undefined) {
+        fields.push(`${field} = ?`);
+        values.push(readNumber(normalized[field], 0));
+      }
     }
     if (normalized.api !== undefined || normalized.api_access !== undefined || normalized.Api !== undefined || normalized.Api_Acces !== undefined) {
       fields.push('api = ?');
@@ -1108,6 +1148,8 @@ export async function resolveUserPlanSettings(env, user) {
     holder: Boolean(effectivePlan.holder ?? effectivePlan.holder_access ?? 0) ? 1 : 0,
     reseller: Boolean(effectivePlan.reseller ?? effectivePlan.reseller_access ?? 0) ? 1 : 0,
     private_access: Boolean(effectivePlan.private_access ?? 0) ? 1 : 0,
+    star_access: Boolean(effectivePlan.star_access ?? userRecord.star_access ?? 0) ? 1 : 0,
+    botnet_access: Boolean(effectivePlan.botnet_access ?? userRecord.botnet_access ?? 0) ? 1 : 0,
     permissions,
     description: effectivePlan.description || ''
   };
@@ -1129,8 +1171,16 @@ export async function applyPlanToUser(env, username, planName) {
     max_concurrents: readNumber(plan.max_concurrents ?? user.max_concurrents ?? 1, 1),
     max_daily_attacks: readNumber(plan.max_daily_attacks ?? user.max_daily_attacks ?? 100, 100),
     api: Boolean(plan.api ?? plan.api_access ?? user.api ?? user.api_access ?? false) ? 1 : 0,
+    vip: Boolean(plan.vip ?? 0) ? 1 : 0,
+    holder: Boolean(plan.holder ?? 0) ? 1 : 0,
+    reseller: Boolean(plan.reseller ?? 0) ? 1 : 0,
     bypass_anti_spam: Boolean(plan.bypass_anti_spam ?? user.bypass_anti_spam ?? 0) ? 1 : 0,
-    bypass_blacklist: Boolean(plan.bypass_blacklist ?? user.bypass_blacklist ?? 0) ? 1 : 0
+    bypass_blacklist: Boolean(plan.bypass_blacklist ?? user.bypass_blacklist ?? 0) ? 1 : 0,
+    bypass_power: Boolean(plan.bypass_power ?? 0) ? 1 : 0,
+    raw_access: Boolean(plan.raw_access ?? 0) ? 1 : 0,
+    star_access: Boolean(plan.star_access ?? 0) ? 1 : 0,
+    botnet_access: Boolean(plan.botnet_access ?? 0) ? 1 : 0,
+    private_access: Boolean(plan.private_access ?? 0) ? 1 : 0
   };
 
   await saveUser(env, nextUser);
@@ -1141,80 +1191,17 @@ export async function seedPlans(env) {
   const DB = getDB(env);
   if (!DB) return;
   try {
-    const count = await DB.prepare('SELECT COUNT(*) AS c FROM plans').all();
-    if ((count?.results?.[0]?.c || 0) === 0) {
-      const defaultPlans = [
-        {
-          name: 'Default',
-          description: 'Starter build NO VIP',
-          max_time: 60,
-          cooldown: 10,
-          max_concurrents: 1,
-          max_daily_attacks: 100,
-          api: 0,
-          bypass_power: 0,
-          bypass_anti_spam: 0,
-          bypass_blacklist: 0,
-          vip: 0,
-          holder: 0,
-          reseller: 0,
-          private_access: 0,
-          price: 0
-        },
-        {
-          name: 'VIP',
-          description: 'Starter build VIP',
-          max_time: 120,
-          cooldown: 30,
-          max_concurrents: 1,
-          max_daily_attacks: 250,
-          api: 0,
-          bypass_power: 0,
-          bypass_anti_spam: 0,
-          bypass_blacklist: 0,
-          vip: 1,
-          holder: 0,
-          reseller: 0,
-          private_access: 0,
-          price: 0
-        },
-        {
-          name: 'API',
-          description: 'Starter API',
-          max_time: 300,
-          cooldown: 10,
-          max_concurrents: 2,
-          max_daily_attacks: 500,
-          api: 1,
-          bypass_power: 0,
-          bypass_anti_spam: 0,
-          bypass_blacklist: 0,
-          vip: 1,
-          holder: 0,
-          reseller: 0,
-          private_access: 0,
-          price: 0
-        }
-      ];
+    {
+      const defaultPlans = DEFAULT_PLANS.map((plan) => ({
+        ...plan,
+        days_active: plan.days_active || 30,
+        max_daily_attacks: plan.max_daily_attacks || 99999,
+        lifetime_price: plan.lifetime_price || 0
+      }));
 
       for (const plan of defaultPlans) {
-        await DB.prepare('INSERT OR IGNORE INTO plans (name, description, price, max_time, cooldown, max_concurrents, max_daily_attacks, api, bypass_power, bypass_anti_spam, bypass_blacklist, vip, holder, reseller, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(
-          plan.name,
-          plan.description,
-          Number(plan.price || 0),
-          Number(plan.max_time || 60),
-          Number(plan.cooldown || 10),
-          Number(plan.max_concurrents || 1),
-          Number(plan.max_daily_attacks || 100),
-          Number(plan.api || 0),
-          Number(plan.bypass_power || 0),
-          Number(plan.bypass_anti_spam || 0),
-          Number(plan.bypass_blacklist || 0),
-          Number(plan.vip || 0),
-          Number(plan.holder || 0),
-          Number(plan.reseller || 0),
-          Number(plan.private_access || 0),
-          new Date().toISOString()
+        await DB.prepare('INSERT INTO plans (name, description, price, lifetime_price, max_time, cooldown, max_concurrents, days_active, max_daily_attacks, api, raw_access, star_access, botnet_access, private_access, bypass_power, bypass_anti_spam, bypass_blacklist, vip, holder, reseller, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET description = excluded.description, price = excluded.price, lifetime_price = excluded.lifetime_price, max_time = excluded.max_time, cooldown = excluded.cooldown, max_concurrents = excluded.max_concurrents, days_active = excluded.days_active, max_daily_attacks = excluded.max_daily_attacks, api = excluded.api, raw_access = excluded.raw_access, star_access = excluded.star_access, botnet_access = excluded.botnet_access, private_access = excluded.private_access, bypass_power = excluded.bypass_power, bypass_anti_spam = excluded.bypass_anti_spam, bypass_blacklist = excluded.bypass_blacklist, vip = excluded.vip, holder = excluded.holder, reseller = excluded.reseller, updated_at = excluded.updated_at').bind(
+          plan.name, plan.description, Number(plan.price || 0), Number(plan.lifetime_price || 0), Number(plan.max_time || 60), Number(plan.cooldown || 0), Number(plan.max_concurrents || 1), Number(plan.days_active || 30), Number(plan.max_daily_attacks || 99999), Number(plan.api || 0), Number(plan.raw_access || 0), Number(plan.star_access || 0), Number(plan.botnet_access || 0), Number(plan.private_access || 0), Number(plan.bypass_power || 0), Number(plan.bypass_anti_spam || 0), Number(plan.bypass_blacklist || 0), Number(plan.vip || 0), Number(plan.holder || 0), Number(plan.reseller || 0), new Date().toISOString(), new Date().toISOString()
         ).run();
       }
     }
@@ -1245,7 +1232,7 @@ export async function seedRootUser(env) {
         max_daily_attacks: 1000,
         created_by: rootUser,
         expiry_unix: 0,
-        plan_id: (await getPlan(env, 'API'))?.id || null
+        plan_id: (await getPlan(env, 'Default'))?.id || null
       });
     }
   } catch (error) {
@@ -1272,7 +1259,7 @@ export async function syncMethodsFromPayload(env) {
 
   try {
     const payloadMethods = (DEFAULT_PAYLOAD.methods || []);
-    const existing = await DB.prepare('SELECT name, enabled, description, target_type, default_port, max_slots, max_time FROM methods').all();
+    const existing = await DB.prepare('SELECT name, enabled, description, target_type, default_port, max_slots, max_concurrents, max_time FROM methods').all();
     const existingRows = (existing?.results || []).map((row) => ({
       name: String(row?.name || '').toLowerCase().trim(),
       enabled: Number(row?.enabled ?? 1),
@@ -1280,6 +1267,7 @@ export async function syncMethodsFromPayload(env) {
       target_type: row?.target_type || 'ip',
       default_port: row?.default_port || 80,
       max_slots: row?.max_slots || 0,
+      max_concurrents: row?.max_concurrents || 5,
       max_time: row?.max_time || null
     }));
     const existingNames = new Set(existingRows.map((row) => row.name).filter(Boolean));
@@ -1305,15 +1293,17 @@ export async function syncMethodsFromPayload(env) {
         reseller: Number(item.reseller ?? 1),
         admin: Number(item.admin ?? 1),
         max_slots: Number(item.max_slots ?? item.max_concurrents ?? 0),
+        max_concurrents: Number(item.max_concurrents ?? 5),
         max_time: item.max_time === undefined || item.max_time === null || item.max_time === '' ? null : Number(item.max_time),
         raw_access: Number(item.raw_access ?? 0),
         star_access: Number(item.star_access ?? 0),
+        botnet_access: Number(item.botnet_access ?? 0),
         private_access: Number(item.private_access ?? 0)
       };
 
       if (!existingNames.has(name)) {
         await DB.prepare(
-          'INSERT INTO methods (name, description, enabled, target_type, default_access, vip, reseller, admin, max_slots, default_port, max_time, raw_access, star_access, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO methods (name, description, enabled, target_type, default_access, vip, reseller, admin, max_slots, max_concurrents, default_port, max_time, raw_access, star_access, botnet_access, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         ).bind(
           normalized.name,
           normalized.description,
@@ -1324,10 +1314,12 @@ export async function syncMethodsFromPayload(env) {
           normalized.reseller ? 1 : 0,
           normalized.admin ? 1 : 0,
           normalized.max_slots || 0,
+          normalized.max_concurrents || 5,
           normalized.default_port || 80,
           normalized.max_time,
           normalized.raw_access ? 1 : 0,
           normalized.star_access ? 1 : 0,
+          normalized.botnet_access ? 1 : 0,
           normalized.private_access ? 1 : 0,
           new Date().toISOString()
         ).run();
@@ -1335,7 +1327,7 @@ export async function syncMethodsFromPayload(env) {
         existingNames.add(name);
       } else {
         await DB.prepare(
-          'UPDATE methods SET description = ?, enabled = ?, target_type = ?, default_access = ?, vip = ?, reseller = ?, admin = ?, max_slots = ?, default_port = ?, max_time = ?, raw_access = ?, star_access = ?, private_access = ?, updated_at = ? WHERE name = ?'
+          'UPDATE methods SET description = ?, enabled = ?, target_type = ?, default_access = ?, vip = ?, reseller = ?, admin = ?, max_slots = ?, max_concurrents = ?, default_port = ?, max_time = ?, raw_access = ?, star_access = ?, botnet_access = ?, private_access = ?, updated_at = ? WHERE name = ?'
         ).bind(
           normalized.description,
           normalized.enabled ? 1 : 0,
@@ -1345,10 +1337,12 @@ export async function syncMethodsFromPayload(env) {
           normalized.reseller ? 1 : 0,
           normalized.admin ? 1 : 0,
           normalized.max_slots || 0,
+          normalized.max_concurrents || 5,
           normalized.default_port || 80,
           normalized.max_time,
           normalized.raw_access ? 1 : 0,
           normalized.star_access ? 1 : 0,
+          normalized.botnet_access ? 1 : 0,
           normalized.private_access ? 1 : 0,
           new Date().toISOString(),
           normalized.name
@@ -1506,7 +1500,7 @@ export async function getMethod(env, methodName) {
   const DB = getDB(env);
   if (!DB) return null;
   try {
-    const explicit = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, default_port, max_time, raw_access, star_access, private_access, created_at, updated_at, target_type FROM methods WHERE name = ?').bind(methodName).all();
+    const explicit = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_concurrents, default_port, max_time, raw_access, star_access, botnet_access, private_access, created_at, updated_at, target_type FROM methods WHERE name = ?').bind(methodName).all();
     if (explicit?.results?.[0]) return explicit.results[0];
 
     const fallback = await DB.prepare('SELECT * FROM methods WHERE name = ?').bind(methodName).all();
@@ -1576,6 +1570,10 @@ export async function updateMethod(env, methodName, updates = {}) {
   if (updates.star_access !== undefined) {
     fields.push('star_access = ?');
     values.push(Number(updates.star_access) ? 1 : 0);
+  }
+  if (updates.botnet_access !== undefined) {
+    fields.push('botnet_access = ?');
+    values.push(Number(updates.botnet_access) ? 1 : 0);
   }
   if (updates.private_access !== undefined) {
     fields.push('private_access = ?');
