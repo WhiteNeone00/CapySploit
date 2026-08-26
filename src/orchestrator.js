@@ -111,10 +111,7 @@ export async function handleRequest(request, env) {
 
     // Load independent settings concurrently and cache them between requests.
     const [maintenanceEnabled, serviceName, apiVersion, uptimeStartedAt] = await Promise.all([
-      getCachedSystemSetting(
-        'maintenance_mode',
-        async () => (await Vault.getMaintenanceMode(env)) ? 'true' : 'false'
-      ),
+      Vault.getMaintenanceMode(env).then((enabled) => enabled ? 'true' : 'false'),
       getCachedSystemSetting('service_name', async () => Vault.getServiceName(env)),
       getCachedSystemSetting('api_version', async () => Vault.getApiVersion(env)),
       getCachedSystemSetting('uptime_started_at', async () => Vault.getSettingOrDefault(env, 'uptime_started_at', new Date().toISOString()))
@@ -123,16 +120,16 @@ export async function handleRequest(request, env) {
     const uptimeStartedMs = Date.parse(uptimeStartedAt);
     const uptime = formatUptime(Number.isFinite(uptimeStartedMs) ? uptimeStartedMs : Date.now());
 
-    const attackRouteInMaintenance = isMaintenance && parts[0] === 'api' && parts[1] === 'attack';
-    if (attackRouteInMaintenance) {
+    const apiRouteInMaintenance = isMaintenance && parts[0] === 'api';
+    if (apiRouteInMaintenance) {
       logger.info('maintenance_mode_active', { endpoint: parts[0] });
       return jsonResponse({
         error: true,
-        message: 'Attacks are temporarily disabled while maintenance mode is active.',
+        message: 'API routes are temporarily disabled while maintenance mode is active.',
         status: 'maintenance',
         maintenance_mode: true,
         service: serviceName,
-        hint: 'API status, plans, methods, and other read-only endpoints remain available.'
+        hint: 'Only administrative routes remain available during maintenance.'
       }, 503, { service: serviceName, version: apiVersion, requestId });
     }
 
