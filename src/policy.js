@@ -46,8 +46,10 @@ export function isMethodPermittedForUser(user, methodMeta) {
 }
 
 export function getUserLimits(user) {
+  const maxTime = Number(user?.max_time);
+  const maxConcurrents = Number(user?.max_concurrents);
   return {
-    maxTime: Number(user?.max_time || 60),
-    maxConcurrents: Number(user?.max_concurrents || 1)
+    maxTime: Number.isFinite(maxTime) && maxTime > 0 ? maxTime : 60,
+    maxConcurrents: Number.isFinite(maxConcurrents) && maxConcurrents > 0 ? maxConcurrents : 1
   };
 }

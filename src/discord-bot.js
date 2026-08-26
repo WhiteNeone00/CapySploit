@@ -167,12 +167,13 @@ async function fetchNetworkStats() {
     if (!payload || payload.error) {
       return { total_attacks_today: 0, vip_users_count: 0, holder_users_count: 0, reseller_users_count: 0, verified_discord_users_count: 0 };
     }
+    const stats = payload.data || payload;
     return {
-      total_attacks_today: Number(payload.total_attacks_today || 0),
-      vip_users_count: Number(payload.vip_users_count || 0),
-      holder_users_count: Number(payload.holder_users_count || 0),
-      reseller_users_count: Number(payload.reseller_users_count || 0),
-      verified_discord_users_count: Number(payload.verified_discord_users_count || 0)
+      total_attacks_today: Number(stats.total_attacks_today || 0),
+      vip_users_count: Number(stats.vip_users_count || 0),
+      holder_users_count: Number(stats.holder_users_count || 0),
+      reseller_users_count: Number(stats.reseller_users_count || 0),
+      verified_discord_users_count: Number(stats.verified_discord_users_count || 0)
     };
   } catch (error) {
     console.error('Failed to fetch network stats:', error);
@@ -977,10 +978,10 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     const profile = payload.data.profile;
-    const expiry = profile.expiry_unix ? new Date(Number(profile.expiry_unix)).toLocaleString('en-GB', { timeZone: 'UTC' }) : 'Never';
+    const expiry = profile.expiry_unix ? new Date(Number(profile.expiry_unix) * 1000).toLocaleString('en-GB', { timeZone: 'UTC' }) : 'Never';
     const boolLabel = (value) => (value ? 'Yes' : 'No');
     const statusColor = profile.is_banned ? 0xE74C3C : profile.account_status === 'at_limit' ? 0xF39C12 : 0x2ECC71;
-    const linkedText = profile.discord_link.linked ? 'Yes' : 'No';
+    const linkedText = profile.discord_link ? 'Yes' : 'No';
 
     const container = new ContainerBuilder()
       .setAccentColor(statusColor)

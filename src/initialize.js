@@ -186,12 +186,18 @@ export async function initializeR2Bucket(R2_BUCKET, bucketName = 'capi-assets') 
  * @returns {Promise<Object>} Combined initialization results
  */
 export async function initializeAll(env) {
+  const [database, kv, r2, r2_user] = await Promise.all([
+    initializeDatabase(env),
+    initializeKV(env.CAPI_KV),
+    initializeR2Bucket(env.capi_assets),
+    initializeR2Bucket(env.capi_user_assets, 'capi-user-assets')
+  ]);
   const results = {
     timestamp: new Date().toISOString(),
-    database: await initializeDatabase(env),
-    kv: await initializeKV(env.CAPI_KV),
-    r2: await initializeR2Bucket(env.capi_assets),
-    r2_user: await initializeR2Bucket(env.capi_user_assets, 'capi-user-assets')
+    database,
+    kv,
+    r2,
+    r2_user
   };
 
   const allSuccess = Object.values(results)

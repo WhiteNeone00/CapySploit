@@ -1,10 +1,10 @@
 // Lookup route handlers for external service lookups.
 import { jsonResponse, parseQuery, routeNotFound } from './response.js';
 import { LOOKUP_SERVICES, APP_DEFAULTS } from './config.js';
+import { lookupIpInfo } from './helpers.js';
 
 // Simple in-memory cache for MC lookups (TTL 5 minutes)
 const mcLookupCache = new Map();
-const ipLookupCache = new Map();
 const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function cacheGet(cache, key) {
@@ -19,40 +19,6 @@ function cacheGet(cache, key) {
 
 function cacheSet(cache, key, value) {
   cache.set(key, { value, expiresAt: Date.now() + LOOKUP_CACHE_TTL_MS });
-}
-
-async function ipLookup(ipOrHost) {
-  const target = String(ipOrHost || '').trim();
-  if (!target) return null;
-
-  // Check cache first
-  const cached = cacheGet(ipLookupCache, target);
-  if (cached) return cached;
-
-  const lookupUrls = (LOOKUP_SERVICES.IP_LOOKUP_URLS || []).map((template) => template.replace('{target}', encodeURIComponent(target)));
-
-  // Fetch all providers in parallel and use the first successful one
-  const results = await Promise.allSettled(
-    lookupUrls.map(async (url) => {
-      try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-        if (!res.ok) return null;
-        const data = await res.json();
-        if (data && data.status === 'success') return data;
-      } catch (e) {
-        console.warn('ip lookup provider failed:', url, e.message);
-      }
-      return null;
-    })
-  );
-
-  for (const result of results) {
-    if (result.status === 'fulfilled' && result.value) {
-      cacheSet(ipLookupCache, target, result.value);
-      return result.value;
-    }
-  }
-  return null;
 }
 
 async function fetchMinecraftServer(addr) {
@@ -109,7 +75,7 @@ export async function lookupHandler(parts, request, env, requestId, logger, requ
       if (!data || data?.notFound || data?.error) {
         return jsonResponse({ error: true, message: 'cfx server not found' }, 404);
       }
-      return jsonResponse({ error: false, server: data, ip_info: data?.endpoint ? await ipLookup(data.endpoint) : null });
+      return jsonResponse({ error: false, server: data, ip_info: data?.endpoint ? await lookupIpInfo(data.endpoint) : null });
     } catch (e) {
       return jsonResponse({ error: true, message: 'cfx lookup service unavailable' }, 502);
     }
@@ -133,7 +99,7 @@ export async function lookupHandler(parts, request, env, requestId, logger, requ
         : data;
       
       // Fetch IP info in parallel with MC server data
-      const ipInfoPromise = normalized?.ip ? ipLookup(normalized.ip) : Promise.resolve(null);
+      const ipInfoPromise = normalized?.ip ? lookupIpInfo(normalized.ip) : Promise.resolve(null);
       const ip_info = await ipInfoPromise;
       
       return jsonResponse({ error: false, server: normalized, ip_info });
@@ -145,7 +111,7 @@ export async function lookupHandler(parts, request, env, requestId, logger, requ
   if (endpoint === 'lookup_ip' || endpoint === 'lookup_domain' || endpoint === 'lookup_host') {
     const target = q.server_address || q.address || q.host || q.ip || q.hostname || q.target || '';
     if (!target) return jsonResponse({ error: true, message: 'missing host or ip target' }, 400);
-    const info = await ipLookup(target);
+    const info = await lookupIpInfo(target);
     if (!info) return jsonResponse({ error: true, message: 'ip lookup failed' }, 404);
     return jsonResponse({ error: false, server: { target }, ip_info: info });
   }

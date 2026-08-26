@@ -56,20 +56,10 @@ function generatePassword(length = PASSWORD_CONFIG.DEFAULT_LENGTH) {
  *   if (!check.valid) return error(check.reason);
  */
 function validatePassword(password) {
-  // Password should be at least 8 chars, have uppercase, lowercase, number
-  if (!password || password.length < PASSWORD_CONFIG.REQUIREMENT.minLength) {
-    return { valid: false, reason: `Password must be at least ${PASSWORD_CONFIG.REQUIREMENT.minLength} characters long.` };
-  }
-  if (PASSWORD_CONFIG.REQUIREMENT.hasUppercase && !/[A-Z]/.test(password)) {
-    return { valid: false, reason: 'Password must contain at least one uppercase letter.' };
-  }
-  if (PASSWORD_CONFIG.REQUIREMENT.hasLowercase && !/[a-z]/.test(password)) {
-    return { valid: false, reason: 'Password must contain at least one lowercase letter.' };
-  }
-  if (PASSWORD_CONFIG.REQUIREMENT.hasNumbers && !/[0-9]/.test(password)) {
-    return { valid: false, reason: 'Password must contain at least one number.' };
-  }
-  return { valid: true, reason: 'OK' };
+  return {
+    valid: typeof password === 'string' && password.length > 0,
+    reason: 'Password cannot be empty.'
+  };
 }
 
 export async function logAuditAction(env, adminUsername, action, targetUser, details = {}, sourceIp = 'unknown', status = 'success') {
@@ -172,7 +162,7 @@ export async function getAuditLogs(env, options = {}) {
   }
 }
 
-async function requireAdminCredentials(q, env) {
+async function requireAdminCredentials(q, env, requestContext = {}) {
   const username = String(q.username || '').trim();
   const password = String(q.password || '').trim();
 
@@ -198,8 +188,8 @@ async function requireAdminCredentials(q, env) {
     };
   }
 
-  const admin = await Vault.getUser(env, username);
-  if (!admin || admin.password !== password || !admin.admin) {
+  const admin = await Vault.getUser(env, username, { fresh: true });
+  if (!admin || !(await Vault.verifyUserPassword(env, admin, password)) || !admin.admin) {
     // Track failed attempt
     const newAttemptCount = trackFailedAuthAttempt(username);
     const remainingAttempts = authStatus.limit - newAttemptCount;
@@ -258,10 +248,12 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
   }
 
   // All other admin endpoints require authentication
-  const guard = await requireAdminCredentials(q, env);
+  const guard = await requireAdminCredentials(q, env, requestContext);
   if (!guard.ok) return guard.response;
   
-  const admin = await Vault.getUser(env, adminUsername);
+  const admin = guard.admin || (requestContext?.user?.username === adminUsername
+    ? requestContext.user
+    : await Vault.getUser(env, adminUsername));
   
   // Apply rate limiting with bypass support
   if (adminUsername && admin) {
@@ -281,7 +273,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     // Parameters:
     //   - username, password: Admin credentials for authentication
     //   - username_to_add (required): New username to create
-    //   - password_to_add (optional): Password for new user (auto-generated if not provided)
+    //   - password_to_add / username_password (optional): Password for new user
     //   - suspended, bypass_slots: Account flags
     // Returns: User object with password if auto-generated
     if (!q.username_to_add) return makePolishedError('missing username_to_add', 400, { hint: 'Provide username_to_add in the request.' });
@@ -291,7 +283,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     if (existingUser) return makePolishedError('username already exists', 409, { hint: `User '${q.username_to_add}' already exists. Choose a different username or use /admin/edit_user to modify.` });
     
     // Auto-generate password if not provided (ensures strength compliance)
-    let userPassword = q.password_to_add || null;
+    let userPassword = q.password_to_add || q.username_password || null;
     let passwordGenerated = false;
     if (!userPassword) {
       userPassword = generatePassword(PASSWORD_CONFIG.DEFAULT_LENGTH);
@@ -462,12 +454,14 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       return makePolishedError('user not found', 404, { hint: 'Verify the username before trying again.' });
     }
 
-    const serviceName = await resolveServiceName(u, env, env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME);
-    const discordLink = await Vault.getVerifiedDiscordLinkByUsername(env, u.username);
-    const lastAttackTime = await Vault.getLastAttackTime(env, u.username);
-    const attacksToday = await Vault.countUserDailyAttacks(env, u.username);
+    const serviceName = requestContext?.serviceName || await resolveServiceName(u, env, env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME);
+    const [discordLink, lastAttackTime, attacksToday, ongoingAttacks] = await Promise.all([
+      Vault.getVerifiedDiscordLinkByUsername(env, u.username),
+      Vault.getLastAttackTime(env, u.username),
+      Vault.countUserDailyAttacks(env, u.username),
+      Vault.countUserOngoing(env, u.username)
+    ]);
     const attacksRemaining = Math.max(0, Number(u.max_daily_attacks || 0) - Number(attacksToday || 0));
-    const ongoingAttacks = await Vault.countUserOngoing(env, u.username);
     
     // Determine plan type and rank
     let planType = 'Free';
@@ -538,10 +532,12 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     const offset = q.offset || 0;
     const { limit: validLimit, offset: validOffset } = validatePaginationParams(limit, offset);
     
-    const countRes = await DBref.prepare('SELECT COUNT(*) AS total FROM logs').all();
+    const [countRes, logsRes] = await Promise.all([
+      DBref.prepare('SELECT COUNT(*) AS total FROM logs').all(),
+      DBref.prepare(`SELECT * FROM logs ORDER BY id DESC LIMIT ? OFFSET ?`).bind(validLimit, validOffset).all()
+    ]);
     const total = countRes?.results?.[0]?.total || 0;
-    const res = await DBref.prepare(`SELECT * FROM logs ORDER BY id DESC LIMIT ? OFFSET ?`).bind(validLimit, validOffset).all();
-    const logs = res.results || [];
+    const logs = logsRes.results || [];
     const totalPages = Math.ceil(total / validLimit);
     const page = Math.floor(validOffset / validLimit) + 1;
     
@@ -719,10 +715,12 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
 
   if (endpoint === 'stats') {
     // Admin statistics endpoint
-    const users = await Vault.listUsers(env);
-    const methods = await Vault.listMethods(env);
-    const blacklist = await Vault.listBlacklist(env);
-    const ongoing = await Vault.listOngoing(env);
+    const [users, methods, blacklist, ongoing] = await Promise.all([
+      Vault.listUsers(env),
+      Vault.listMethods(env),
+      Vault.listBlacklist(env),
+      Vault.listOngoing(env)
+    ]);
     
     const suspendedCount = (users || []).filter(u => u.suspended).length;
     const adminCount = (users || []).filter(u => u.admin).length;

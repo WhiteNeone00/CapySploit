@@ -53,7 +53,9 @@ export function validateTarget(target) {
  * @returns {Object} {valid: boolean, error: string, port: number}
  */
 export function validatePort(port) {
-  const num = parseInt(port, 10);
+  const value = String(port ?? '').trim();
+  if (!/^\d+$/.test(value)) return { valid: false, error: 'Port must be a number', port: null };
+  const num = Number(value);
   if (isNaN(num)) return { valid: false, error: 'Port must be a number', port: null };
   if (num < 1 || num > 65535) {
     return { valid: false, error: 'Port must be between 1 and 65535', port: null };
@@ -69,7 +71,9 @@ export function validatePort(port) {
  * @returns {Object} {valid: boolean, error: string, duration: number}
  */
 export function validateDuration(duration, min = 1, max = 9999) {
-  const num = parseInt(duration, 10);
+  const value = String(duration ?? '').trim();
+  if (!/^\d+$/.test(value)) return { valid: false, error: 'Duration must be a number', duration: null };
+  const num = Number(value);
   if (isNaN(num)) return { valid: false, error: 'Duration must be a number', duration: null };
   if (num < min) return { valid: false, error: `Duration must be at least ${min} seconds`, duration: null };
   if (num > max) return { valid: false, error: `Duration must be at most ${max} seconds`, duration: null };
@@ -255,7 +259,9 @@ export function isBlacklistedByMetadata(ipinfo, payloadBlacklists) {
  * @returns {Object} {valid: boolean, error: string, threads: number}
  */
 export function validateThreads(threads) {
-  const num = parseInt(threads, 10);
+  const value = String(threads ?? '').trim();
+  if (!/^\d+$/.test(value)) return { valid: false, error: 'Threads must be a number', threads: null };
+  const num = Number(value);
   if (isNaN(num)) return { valid: false, error: 'Threads must be a number', threads: null };
   if (num < 1) return { valid: false, error: 'Threads must be at least 1', threads: null };
   if (num > 256) return { valid: false, error: 'Threads cannot exceed 256', threads: null };
@@ -268,7 +274,9 @@ export function validateThreads(threads) {
  * @returns {Object} {valid: boolean, error: string, rps: number}
  */
 export function validateRPS(rps) {
-  const num = parseInt(rps, 10);
+  const value = String(rps ?? '').trim();
+  if (!/^\d+$/.test(value)) return { valid: false, error: 'RPS must be a number', rps: null };
+  const num = Number(value);
   if (isNaN(num)) return { valid: false, error: 'RPS must be a number', rps: null };
   if (num < 1) return { valid: false, error: 'RPS must be at least 1', rps: null };
   if (num > 100000) return { valid: false, error: 'RPS cannot exceed 100000', rps: null };

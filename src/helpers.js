@@ -1,7 +1,7 @@
 // Shared utility functions used across multiple modules
 // Extract duplicated and common functions here for DRY principle
 import { getPayloadMethods } from '../payload.js';
-import { PAGINATION_CONFIG, API_CONFIG, RATE_LIMIT_CONFIG, FAILED_AUTH_CONFIG, TIMEOUT_CONFIG, CACHE_CONFIG, CONCURRENCY_CONFIG, DEFAULT_PLANS, DEFAULT_METHODS } from './config.js';
+import { PAGINATION_CONFIG, API_CONFIG, RATE_LIMIT_CONFIG, FAILED_AUTH_CONFIG, TIMEOUT_CONFIG, CACHE_CONFIG, CONCURRENCY_CONFIG, DEFAULT_PLANS, DEFAULT_METHODS, LOOKUP_SERVICES, APP_DEFAULTS } from './config.js';
 
 // ==================== DB-FIRST CONFIGURATION PATTERN ====================
 // All settings check database (system_settings) first, then fall back to config.js
@@ -167,6 +167,29 @@ class CacheStore {
 const userCache = new CacheStore();
 const methodCache = new CacheStore();
 const systemSettingsCache = new CacheStore();
+const lookupIpCache = new CacheStore();
+
+export async function lookupIpInfo(ipOrHost) {
+  const target = String(ipOrHost || '').trim();
+  if (!target) return null;
+  const cached = lookupIpCache.get(target);
+  if (cached) return cached;
+
+  const templates = LOOKUP_SERVICES.IP_LOOKUP_URLS?.length
+    ? LOOKUP_SERVICES.IP_LOOKUP_URLS
+    : [APP_DEFAULTS.IP_LOOKUP_FALLBACK_URL];
+  const results = await Promise.allSettled(templates.map(async (template) => {
+    const response = await fetch(template.replace('{target}', encodeURIComponent(target)), {
+      signal: AbortSignal.timeout(TIMEOUT_CONFIG.EXTERNAL_LOOKUP_TIMEOUT_MS)
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data?.status === 'success' ? data : null;
+  }));
+  const result = results.find((entry) => entry.status === 'fulfilled' && entry.value)?.value || null;
+  if (result) lookupIpCache.set(target, result, CACHE_CONFIG.DEFAULT_TTL_MS);
+  return result;
+}
 
 /**
  * Get cached user metadata
@@ -206,7 +229,7 @@ export async function getCachedMethods(fetchFn) {
   
   const methods = await fetchFn();
   if (methods) {
-    methodCache.set(cacheKey, methods, CACHE_CONFIG.METHOD_TTL_MS);
+    methodCache.set(cacheKey, methods, CACHE_CONFIG.METHODS_TTL_MS);
   }
   return methods;
 }
@@ -234,7 +257,7 @@ export async function getCachedMethodMap(fetchFn) {
     const methodMap = new Map(
       (methods || []).map((item) => [String(item?.name || '').toLowerCase(), item])
     );
-    methodCache.set(cacheKey, methodMap, CACHE_CONFIG.METHOD_TTL_MS);
+    methodCache.set(cacheKey, methodMap, CACHE_CONFIG.METHODS_TTL_MS);
     return methodMap;
   }
   return new Map();
@@ -253,7 +276,7 @@ export async function getCachedSystemSetting(key, fetchFn) {
   
   const value = await fetchFn(key);
   if (value !== null) {
-    systemSettingsCache.set(cacheKey, value, CACHE_CONFIG.SETTING_TTL_MS);
+    systemSettingsCache.set(cacheKey, value, CACHE_CONFIG.SETTINGS_TTL_MS);
   }
   return value;
 }

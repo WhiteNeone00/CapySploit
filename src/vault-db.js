@@ -11,6 +11,8 @@ import {
   invalidateSettingsCache
 } from './helpers.js';
 
+const cleanupInFlight = new WeakMap();
+
 export function getDB(env) {
   return env && (env.capi_db || env.CAPI_DB || env.DB || env.CAPI_db);
 }
@@ -88,6 +90,7 @@ export async function ensureTables(env) {
       max_time INTEGER DEFAULT 60,
       cooldown INTEGER DEFAULT 10,
       max_concurrents INTEGER DEFAULT 1,
+      days_active INTEGER DEFAULT 5,
       max_daily_attacks INTEGER DEFAULT 100,
       api INTEGER DEFAULT 0,
       raw_access INTEGER DEFAULT 0,
@@ -252,10 +255,12 @@ export async function ensureTables(env) {
       value TEXT,
       type TEXT,
       description TEXT,
+      created_at TEXT,
       updated_at TEXT
     )`).run();
 
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN plan_id INTEGER');
+    await addColumn(DB, 'ALTER TABLE system_settings ADD COLUMN created_at TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN last_ip TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN whitelisted_ip TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN raw_access INTEGER DEFAULT 0');
@@ -266,6 +271,7 @@ export async function ensureTables(env) {
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN warning_reset_at TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN api INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN price REAL DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN days_active INTEGER DEFAULT 5');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN raw_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN star_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN bypass_power INTEGER DEFAULT 0');
@@ -342,21 +348,27 @@ export async function ensureTables(env) {
   }
 }
 
-export async function getUser(env, username) {
+async function fetchUserFromDatabase(DB, username) {
+  const explicit = await DB.prepare(`SELECT
+    username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,
+    created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,
+    power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,private_access,expires_at,
+    last_ip,whitelisted_ip,warning_count,warning_reset_at
+    FROM users WHERE username = ?`).bind(username).all();
+  if (explicit?.results?.[0]) return explicit.results[0];
+
+  const fallback = await DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).all();
+  return fallback?.results?.[0] || null;
+}
+
+export async function getUser(env, username, options = {}) {
   const DB = getDB(env);
   if (!DB || !username) return null;
 
-  const cached = getCachedUser(username, async () => {
-    const explicit = await DB.prepare(`SELECT
-      username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,
-      created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,
-      power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,private_access,expires_at,
-      last_ip,whitelisted_ip,warning_count,warning_reset_at
-      FROM users WHERE username = ?`).bind(username).all();
-    if (explicit?.results?.[0]) return explicit.results[0];
+  if (options.fresh) return fetchUserFromDatabase(DB, username);
 
-    const fallback = await DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).all();
-    return fallback?.results?.[0] || null;
+  const cached = getCachedUser(username, async () => {
+    return fetchUserFromDatabase(DB, username);
   });
 
   return cached;
@@ -396,12 +408,13 @@ export async function saveUser(env, user) {
   if (!DB) return;
   const now = new Date().toISOString();
   const apiValue = user.api ?? user.api_access ?? 0;
+  const storedPassword = String(user.password || '');
   try {
     await DB.prepare(`INSERT OR REPLACE INTO users (
       username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,private_access,expires_at,last_ip,whitelisted_ip,warning_count,warning_reset_at
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
       user.username,
-      user.password,
+      storedPassword,
       user.admin ? 1 : 0,
       user.reseller ? 1 : 0,
       user.vip ? 1 : 0,
@@ -438,6 +451,11 @@ export async function saveUser(env, user) {
     console.error('Error in saveUser:', error.message);
     throw error;
   }
+}
+
+export async function verifyUserPassword(env, user, password) {
+  if (!user) return false;
+  return String(password || '') === String(user.password || '');
 }
 
 export async function deleteUser(env, username) {
@@ -591,7 +609,11 @@ export async function cleanupOngoing(env) {
   const DB = getDB(env);
   if (!DB) return { updated: 0, deleted: 0 };
 
-  try {
+  const existing = cleanupInFlight.get(DB);
+  if (existing) return existing;
+
+  const cleanupPromise = (async () => {
+    try {
     const cleanupSetting = await getSystemSetting(env, 'auto_cleanup_enabled');
     if (cleanupSetting && cleanupSetting.value === 'false') {
       return { updated: 0, deleted: 0, disabled_by_system_setting: true };
@@ -600,13 +622,20 @@ export async function cleanupOngoing(env) {
     const expired = await DB.prepare("DELETE FROM ongoing_attacks WHERE status='finished' AND datetime(expires_at) < datetime('now', '-7 days')").run();
     const stalePending = await DB.prepare("DELETE FROM ongoing_attacks WHERE status='pending' AND datetime(started_at) < datetime('now', '-1 day')").run();
 
-    return {
+      return {
       updated: Number(updated?.meta?.changes || 0),
       deleted: Number((expired?.meta?.changes || 0) + (stalePending?.meta?.changes || 0)),
       error: null
-    };
-  } catch (error) {
-    return { updated: 0, deleted: 0, error: error.message };
+      };
+    } catch (error) {
+      return { updated: 0, deleted: 0, error: error.message };
+    }
+  })();
+  cleanupInFlight.set(DB, cleanupPromise);
+  try {
+    return await cleanupPromise;
+  } finally {
+    if (cleanupInFlight.get(DB) === cleanupPromise) cleanupInFlight.delete(DB);
   }
 }
 

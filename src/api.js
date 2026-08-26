@@ -4,28 +4,11 @@ import * as Vault from './vault-db.js';
 import { getPayloadMethods, getPayloadBlacklists } from '../payload.js';
 import { getUserLimits, isMethodPermittedForUser } from './policy.js';
 import { generateVerificationCode, buildDiscordRoleNames, userPlanRole } from './discord.js';
-import { formatSlotBar, generateAttackId, checkApiRateLimit, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot } from './helpers.js';
+import { formatSlotBar, generateAttackId, checkApiRateLimit, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot, lookupIpInfo } from './helpers.js';
 import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, LOOKUP_SERVICES, USER_LIMITS } from './config.js';
 import { isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget, normalizeBlacklistValue, isBlacklistedTarget, isBlacklistedByMetadata, validatePayloadLength } from './validator.js';
 
 let SERVICE_START = null;
-const ipLookupCache = new Map();
-const IP_LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
-
-function cacheGet(cache, key) {
-  const entry = cache.get(key);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    cache.delete(key);
-    return null;
-  }
-  return entry.value;
-}
-
-function cacheSet(cache, key, value) {
-  cache.set(key, { value, expiresAt: Date.now() + IP_LOOKUP_CACHE_TTL_MS });
-}
-
 export function getSafeIpInfo(ipinfo) {
   return ipinfo && typeof ipinfo === 'object' ? ipinfo : {};
 }
@@ -34,10 +17,7 @@ export async function resolveFastIpInfo(target, timeoutMs = 400) {
   const cleanTarget = String(target || '').trim();
   if (!cleanTarget) return {};
 
-  const cached = cacheGet(ipLookupCache, cleanTarget);
-  if (cached) return getSafeIpInfo(cached);
-
-  const lookupPromise = ipLookup(cleanTarget);
+  const lookupPromise = lookupIpInfo(cleanTarget);
   const result = await Promise.race([
     lookupPromise.then((data) => ({ data, timedOut: false })),
     new Promise((resolve) => setTimeout(() => resolve({ data: null, timedOut: true }), timeoutMs))
@@ -62,27 +42,8 @@ function isPowerSavingEnabled(value) {
 }
 
 export async function ipLookup(ipOrHost) {
-  const target = String(ipOrHost || '').trim();
-  if (!target) return null;
-
-  const cached = cacheGet(ipLookupCache, target);
-  if (cached) return cached;
-
   try {
-    const lookupUrlTemplate = LOOKUP_SERVICES.IP_LOOKUP_URLS[0] || APP_DEFAULTS.IP_LOOKUP_FALLBACK_URL;
-    const lookupUrl = lookupUrlTemplate.replace('{target}', encodeURIComponent(target));
-    const res = await withTimeout(
-      fetch(lookupUrl),
-      TIMEOUT_CONFIG.EXTERNAL_LOOKUP_TIMEOUT_MS,
-      'IP lookup'
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data && data.status === 'success') {
-      cacheSet(ipLookupCache, target, data);
-      return data;
-    }
-    return null;
+    return await lookupIpInfo(ipOrHost);
   } catch (e) {
     console.warn(`IP lookup failed for ${ipOrHost}: ${e.message}`);
     return null;
@@ -264,7 +225,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (!botAuth) {
       const providedPassword = (qv.password || qv.pass || '').toString();
       if (!qv.username || !providedPassword) return makePolishedError('missing credentials', 401, { hint: 'Provide username and password for this API route.' });
-      const u = await Vault.getUser(env, qv.username);
+      const u = await Vault.getUser(env, qv.username, { fresh: true });
       if (!u || String(u.password || '') !== providedPassword) return makePolishedError('invalid credentials', 401, { hint: 'Username or password is incorrect.' });
       requestUser = u;
     }
@@ -298,18 +259,32 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       const discordId = qv.discord_user_id || qv.discord_id || qv.discord;
       if (discordId) {
         const link = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordId);
-        if (link && link.username) return { ok: true, username: link.username, bot: true };
+        if (link && link.username) {
+          const user = requestContext?.user?.username === link.username
+            ? requestContext.user
+            : await Vault.getUser(env, link.username);
+          return { ok: true, username: link.username, user, bot: true };
+        }
       }
     }
     // Username/password flow
     if (qv.username) {
       const providedPassword = (qv.password || qv.pass || '').toString();
       if (!providedPassword) return { ok: false, reason: 'missing_credentials' };
-      const u = await Vault.getUser(env, qv.username);
+      const u = await Vault.getUser(env, qv.username, { fresh: true });
       if (!u || String(u.password || '') !== providedPassword) return { ok: false, reason: 'invalid_credentials' };
-      return { ok: true, username: qv.username, bot: false };
+      return { ok: true, username: qv.username, user: u, bot: false };
     }
     return { ok: false, reason: 'missing_credentials' };
+  }
+
+  function authErrorResponse(auth) {
+    const invalid = auth?.reason === 'invalid_credentials';
+    return makePolishedError(invalid ? 'invalid credentials' : 'missing credentials', 401, {
+      hint: invalid
+        ? 'The supplied username or password is incorrect.'
+        : 'Provide username/password or use bot auth with discord_user_id.'
+    });
   }
 
   const ALLOWED_METHODS = Object.fromEntries(
@@ -332,9 +307,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       users,
       ongoing,
       attacksToday,
-      vipUsers,
-      holderUsers,
-      resellerUsers,
       verifiedDiscordUsers,
       maintenanceMode,
       attacksDisabled
@@ -342,9 +314,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       Vault.listUsers(env),
       Vault.countOngoing(env),
       Vault.countLogsToday(env),
-      Vault.countUsersByFlag(env, 'vip'),
-      Vault.countUsersByFlag(env, 'holder'),
-      Vault.countUsersByFlag(env, 'reseller'),
       Vault.countVerifiedDiscordLinks(env),
       Vault.getMaintenanceMode(env),
       Vault.getAttacksDisabled(env)
@@ -353,6 +322,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const total = users.length;
     const activeUsers = users.filter((user) => !user.suspended).length;
     const suspendedUsers = users.filter((user) => user.suspended).length;
+    const vipUsers = users.filter((user) => user.vip).length;
+    const holderUsers = users.filter((user) => user.holder).length;
+    const resellerUsers = users.filter((user) => user.reseller).length;
     const healthStatus = suspendedUsers > 0 || ongoing > 0 ? 'degraded' : 'stable';
 
     return jsonResponse({
@@ -513,7 +485,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   if (endpoint === 'discord_profile') {
     const qv = q;
     const auth = await allowUserOrBotAuth(qv, request);
-    if (!auth.ok) return makePolishedError('missing credentials', 401, { hint: 'Provide username/password or use bot auth with discord_user_id.' });
+    if (!auth.ok) return authErrorResponse(auth);
     const discordUserId = q.discord_user_id || q.discord_id || q.user_id;
     if (!discordUserId) return makePolishedError('missing discord_user_id', 400, { hint: 'Provide discord_user_id to lookup your linked profile.' });
     const link = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordUserId);
@@ -566,7 +538,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     const user = await Vault.getUser(env, username);
     if (!user) return jsonResponse({ error: true, message: 'user does not exist', client, code: null }, 404, { service: serviceName, version: apiVersion });
-    if (user.password !== password) return jsonResponse({ error: true, message: 'wrong password', client, code: null }, 401, { service: serviceName, version: apiVersion });
+    if (!(await Vault.verifyUserPassword(env, user, password))) return jsonResponse({ error: true, message: 'wrong password', client, code: null }, 401, { service: serviceName, version: apiVersion });
     if (user.suspended) return jsonResponse({ error: true, message: 'account suspended', client, code: null }, 403, { service: serviceName, version: apiVersion });
     if (!(user.api ?? user.api_access)) return jsonResponse({ error: true, message: 'api access disabled', client, code: null }, 403, { service: serviceName, version: apiVersion });
 
@@ -600,7 +572,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     // Allow bot auth or username/password for link completion
     const qv = q;
     const auth = await allowUserOrBotAuth(qv, request);
-    if (!auth.ok) return makePolishedError('missing credentials', 401, { hint: 'Provide username/password or use bot auth with discord_user_id.' });
+    if (!auth.ok) return authErrorResponse(auth);
 
     const existingDiscordLink = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordUserId);
     if (existingDiscordLink) {
@@ -662,8 +634,8 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   if (endpoint === 'view_plan') {
     const qv = q;
     const auth = await allowUserOrBotAuth(qv, request);
-    if (!auth.ok) return makePolishedError('missing credentials', 401, { hint: 'Provide username/password or use bot auth with discord_user_id.' });
-    const u = await Vault.getUser(env, auth.username);
+    if (!auth.ok) return authErrorResponse(auth);
+    const u = auth.user || await Vault.getUser(env, auth.username);
     if (!u) return makePolishedError('user not found', 404, { hint: `User '${auth.username}' does not exist.` });
     
     // Apply rate limiting with bypass support
@@ -676,9 +648,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       );
     }
     
-    const userServiceName2 = await resolveServiceName(u, env, serviceName);
-    const discordLink = await Vault.getVerifiedDiscordLinkByUsername(env, u.username);
-    const attacksToday = await Vault.countUserDailyAttacks(env, u.username);
+    const [discordLink, attacksToday] = await Promise.all([
+      Vault.getVerifiedDiscordLinkByUsername(env, u.username),
+      Vault.countUserDailyAttacks(env, u.username)
+    ]);
     const attacksRemaining = Math.max(0, Number(u.max_daily_attacks || 0) - Number(attacksToday || 0));
     
     // Determine plan type and rank
@@ -749,7 +722,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       const providedPassword = (qv.password || qv.pass || '').toString();
       if (providedPassword) {
         const u = await Vault.getUser(env, username);
-        if (!u || String(u.password || '') !== providedPassword) return makePolishedError('invalid credentials', 401, { hint: 'Username or password is incorrect.' });
+        if (!u || !(await Vault.verifyUserPassword(env, u, providedPassword))) return makePolishedError('invalid credentials', 401, { hint: 'Username or password is incorrect.' });
       } else {
         // No auth provided — require username/password to view a user's ongoing attacks
         return makePolishedError('missing credentials', 401, { hint: 'Provide username and password in the request.' });
@@ -767,7 +740,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   if (endpoint === 'my_attacks') {
     // List all attack history for authenticated user
     const auth = await allowUserOrBotAuth(q, request);
-    if (!auth.ok) return makePolishedError('missing credentials', 401, { hint: 'Provide username/password or use bot auth with discord_user_id.' });
+    if (!auth.ok) return authErrorResponse(auth);
     
     const limit = Number(q.limit || 100);
     const offset = Number(q.offset || 0);

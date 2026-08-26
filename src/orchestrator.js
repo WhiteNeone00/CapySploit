@@ -14,6 +14,7 @@ const MAX_REQUEST_SIZE = 1048576; // 1MB limit
 const INIT_CHECK_INTERVAL = 60000; // 1 minute between init checks
 
 let dbInitialized = false;
+let initializationPromise = null;
 let lastInitCheck = 0;
 let lastCleanupTime = 0;
 let lastCacheCleanupTime = 0;
@@ -89,19 +90,16 @@ export async function handleRequest(request, env) {
     const username = String(query.get('username') || '').trim();
     const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
 
-    // Load maintenance mode once per request with caching
-    const maintenanceEnabled = await getCachedSystemSetting(
-      'maintenance_mode',
-      async (key) => {
-        const result = await Vault.getMaintenanceMode(env);
-        return result ? 'true' : 'false';
-      }
-    );
+    // Load independent settings concurrently and cache them between requests.
+    const [maintenanceEnabled, serviceName, apiVersion] = await Promise.all([
+      getCachedSystemSetting(
+        'maintenance_mode',
+        async () => (await Vault.getMaintenanceMode(env)) ? 'true' : 'false'
+      ),
+      getCachedSystemSetting('service_name', async () => Vault.getServiceName(env)),
+      getCachedSystemSetting('api_version', async () => Vault.getApiVersion(env))
+    ]);
     const isMaintenance = maintenanceEnabled === 'true';
-
-    // Load service name and version from database with fallback
-    const serviceName = await Vault.getServiceName(env);
-    const apiVersion = await Vault.getApiVersion(env);
 
     if (isMaintenance && parts[0] !== 'admin') {
       logger.info('maintenance_mode_active', { endpoint: parts[0] });
@@ -138,8 +136,14 @@ export async function handleRequest(request, env) {
 
     // Initialize database and seed defaults on first request
     if (!dbInitialized) {
-      await initializeAll(env);
-      dbInitialized = true;
+      initializationPromise ||= initializeAll(env);
+      const currentInitialization = initializationPromise;
+      try {
+        await currentInitialization;
+        dbInitialized = true;
+      } finally {
+        if (initializationPromise === currentInitialization) initializationPromise = null;
+      }
       logger.info('database_initialized');
     }
 

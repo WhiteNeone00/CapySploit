@@ -229,6 +229,7 @@ export function jsonResponse(payload, status = 200, options = {}) {
     status,
     headers: {
       'Content-Type': 'application/json',
+      ...(options.requestId ? { 'X-Request-ID': String(options.requestId) } : {}),
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'

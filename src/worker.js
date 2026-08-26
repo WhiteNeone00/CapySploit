@@ -1,4 +1,4 @@
-import { formatErrorDetails, jsonResponse } from './response.js';
+import { jsonResponse } from './response.js';
 import { handleRequest } from './orchestrator.js';
 
 export default {
@@ -6,8 +6,8 @@ export default {
     try {
       return await handleRequest(request, env, ctx);
     } catch (e) {
-      const details = formatErrorDetails(e);
-      return jsonResponse({ error: true, message: e?.message || 'internal error', debug: details }, 500);
+      console.error('Worker request failed:', e);
+      return jsonResponse({ error: true, message: 'internal error' }, 500);
     }
   }
 };
