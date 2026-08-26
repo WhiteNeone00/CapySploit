@@ -1,0 +1,1995 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Resemble | Premium Network Solutions</title>
+  <link rel="icon" type="image/png" href="planicons/api.png">
+  <link rel="apple-touch-icon" href="planicons/api.png">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet">
+  <!-- SellAuth Embed -->
+  <script src="https://sellauth.com/assets/js/sellauth-embed-2.js" defer></script>
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --blue: #1a6bff;
+      --blue-l: #4d8fff;
+      --blue-pale: #e8f0ff;
+      --blue-mid: #c4d7ff;
+      --bg: #050a15;
+      --surface: rgba(10, 15, 30, 0.4);
+      --surface2: rgba(26, 107, 255, 0.1);
+      --surface-hover: rgba(26, 107, 255, 0.15);
+      --text: #ffffff;
+      --text2: #a0a8c0;
+      --text3: #6b7280;
+      --border: rgba(255, 255, 255, 0.08);
+      --border2: rgba(255, 255, 255, 0.12);
+      --border-hover: rgba(255, 255, 255, 0.2);
+      --sh: 0 8px 32px rgba(0, 0, 0, 0.4);
+      --shh: 0 8px 32px rgba(0, 0, 0, 0.6);
+      --accent: #ffffff;
+      --success: #22c55e;
+    }
+
+    html {
+      background-color: var(--bg);
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: 'Instrument Sans', sans-serif;
+      color: var(--text);
+      min-height: 100vh;
+      position: relative;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ── CANVAS BG ── */
+    .main-bg {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      background: url('bg.jpg') no-repeat center center;
+      background-size: cover;
+      transform: translateZ(0);
+    }
+
+    .bg-dots {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background-image: radial-gradient(circle, rgba(26, 107, 255, 0.13) 1px, transparent 1px);
+      background-size: 28px 28px;
+      mask-image: linear-gradient(to bottom, black 0%, black 80%, transparent 100%);
+      opacity: 0.55;
+    }
+
+    #particles-canvas {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+    }
+
+    /* ── SCROLL REVEAL UTILS ── */
+    .reveal {
+      opacity: 0;
+      transform: translateY(40px);
+      transition: all 1.6s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .reveal-left {
+      opacity: 0;
+      transform: translateX(-40px);
+      transition: all 1.6s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .reveal-right {
+      opacity: 0;
+      transform: translateX(40px);
+      transition: all 1.6s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .reveal.active,
+    .reveal-left.active,
+    .reveal-right.active {
+      opacity: 1;
+      transform: translate(0, 0);
+    }
+
+    /* ── NAVIGATION ── */
+    .nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 70px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 40px;
+      z-index: 100;
+      background: rgba(2, 4, 10, 0.6);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid transparent;
+      border-bottom: 1px solid var(--border);
+      transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .nav.scrolled {
+      top: 15px;
+      left: 15%;
+      right: 15%;
+      height: 60px;
+      border-radius: 100px;
+      padding: 0 30px;
+      background: rgba(5, 10, 21, 0.95);
+      border: 1px solid rgba(26, 107, 255, 0.25);
+      box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.9);
+    }
+
+    .nav.scrolled .nav-logo {
+      transform: scale(0.9);
+    }
+
+    .nav.scrolled .nav-links {
+      transform: scale(0.95);
+    }
+
+    .nav-logo {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+      transform-origin: left center;
+    }
+
+    .nav-logo span {
+      background: linear-gradient(-45deg, var(--blue), var(--blue-pale));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      font-size: 24px;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 24px;
+      transition: transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+      transform-origin: right center;
+    }
+
+    .nav-link {
+      color: var(--text2);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      transition: color 0.3s;
+    }
+
+    .nav-link:hover {
+      color: var(--text);
+    }
+
+    /* ── HERO SECTION ── */
+    .hero {
+      min-height: 100vh;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 100px 20px;
+      text-align: center;
+      position: relative;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      background: rgba(26, 107, 255, 0.08);
+      border: 1px solid rgba(26, 107, 255, 0.2);
+      border-radius: 100px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+      letter-spacing: 0.5px;
+      margin-bottom: 24px;
+      animation: up 0.8s ease both;
+      box-shadow: 0 0 20px rgba(26, 107, 255, 0.1);
+    }
+
+    .hero-badge b {
+      color: #fff;
+      font-weight: 800;
+    }
+
+    .hero-badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--blue-l);
+      box-shadow: 0 0 8px var(--blue-l);
+      animation: blink 2s infinite;
+    }
+
+    @keyframes blink {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.4;
+      }
+    }
+
+    .hero-title {
+      font-size: 64px;
+      font-weight: 800;
+      letter-spacing: -2px;
+      line-height: 1.1;
+      margin-bottom: 24px;
+      max-width: 800px;
+      animation: up 0.8s 0.1s ease both;
+    }
+
+    .hero-title span {
+      background: linear-gradient(-45deg,
+          var(--blue),
+          #ffffff,
+          var(--blue-l),
+          #ffffff,
+          var(--blue));
+      background-size: 400% 400%;
+      -webkit-text-fill-color: transparent;
+      -webkit-background-clip: text;
+      animation: gradientShift 6s linear infinite;
+    }
+
+    @keyframes gradientShift {
+      0% {
+        background-position: 0% 50%;
+      }
+
+      50% {
+        background-position: 100% 50%;
+      }
+
+      100% {
+        background-position: 0% 50%;
+      }
+    }
+
+    .hero-desc {
+      font-size: 18px;
+      color: var(--text2);
+      max-width: 600px;
+      margin-bottom: 40px;
+      line-height: 1.6;
+      animation: up 0.8s 0.2s ease both;
+    }
+
+    .hero-btns {
+      display: flex;
+      gap: 16px;
+      animation: up 0.8s 0.3s ease both;
+    }
+
+    .btn-main,
+    .btn-sec {
+      padding: 14px 28px;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.3s;
+    }
+
+    .btn-main {
+      background: var(--blue);
+      color: #fff;
+      box-shadow: 0 0 20px rgba(26, 107, 255, 0.4);
+    }
+
+    .btn-main:hover {
+      background: var(--blue-l);
+      box-shadow: 0 0 30px rgba(26, 107, 255, 0.6);
+      transform: translateY(-2px);
+    }
+
+    .btn-sec {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .btn-sec:hover {
+      background: var(--surface-hover);
+      border-color: var(--border-hover);
+      transform: translateY(-2px);
+    }
+
+    .scroll-indicator {
+      position: absolute;
+      bottom: 40px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      color: var(--text3);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      animation: bounce 2s infinite;
+      text-decoration: none;
+    }
+
+    .scroll-indicator svg {
+      width: 20px;
+      height: 20px;
+      stroke: var(--text3);
+    }
+
+    @keyframes bounce {
+
+      0%,
+      100% {
+        transform: translateY(0);
+      }
+
+      50% {
+        transform: translateY(10px);
+      }
+    }
+
+    @keyframes up {
+      from {
+        opacity: 0;
+        transform: translateY(30px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* ── SHOWCASE SECTION ── */
+    .section {
+      width: 100%;
+      max-width: 1200px;
+      padding: 80px 20px;
+    }
+
+    .showcase {
+      display: flex;
+      align-items: center;
+      gap: 60px;
+      margin-bottom: 120px;
+    }
+
+    .showcase.reverse {
+      flex-direction: row-reverse;
+    }
+
+    .showcase-content {
+      flex: 1;
+    }
+
+    .showcase-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--blue);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+      font-family: 'DM Mono', monospace;
+    }
+
+    .showcase-title {
+      font-size: 42px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      line-height: 1.2;
+      margin-bottom: 24px;
+    }
+
+    .showcase-desc {
+      font-size: 16px;
+      color: var(--text2);
+      line-height: 1.6;
+      margin-bottom: 32px;
+    }
+
+    .feature-list {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .feature-list-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .feature-list-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--blue), var(--blue-l));
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      box-shadow: 0 4px 12px rgba(26, 107, 255, 0.3);
+    }
+
+    .feature-list-icon svg {
+      width: 18px;
+      height: 18px;
+      stroke-width: 2;
+    }
+
+    .feature-list-text {
+      font-size: 15px;
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .feature-list-sub {
+      font-size: 13px;
+      color: var(--text3);
+      margin-top: 4px;
+    }
+
+    .showcase-img-wrap {
+      flex: 1.2;
+      position: relative;
+    }
+
+    .showcase-img {
+      width: 100%;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shh);
+      transition: transform 0.5s;
+    }
+
+    .showcase-img-wrap:hover .showcase-img {
+      transform: scale(1.02) translateY(-5px);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.8), 0 0 40px rgba(26, 107, 255, 0.2);
+    }
+
+    .showcase-img-wrap::after {
+      content: '';
+      position: absolute;
+      inset: -2px;
+      background: linear-gradient(135deg, var(--blue), transparent, var(--blue-pale));
+      z-index: -1;
+      border-radius: 22px;
+      opacity: 0.3;
+      filter: blur(15px);
+    }
+
+    /* ── PRICING SECTIONS ── */
+    .section-header {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+
+    .section-title {
+      font-size: 36px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      margin-bottom: 16px;
+    }
+
+    .section-subtitle {
+      font-size: 16px;
+      color: var(--text2);
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    .plans-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      grid-auto-rows: 1fr;
+      gap: 30px;
+      width: 100%;
+      margin-bottom: 80px;
+    }
+
+    .plan-card {
+      background: linear-gradient(180deg, rgba(13, 20, 38, 0.4) 0%, rgba(5, 10, 21, 0.7) 100%);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 24px;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.4s ease, box-shadow 0.4s ease;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      will-change: transform;
+      backface-visibility: hidden;
+    }
+
+    .plan-card.active:hover {
+      border-color: rgba(26, 107, 255, 0.4);
+      box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 0.8), 0 0 30px rgba(26, 107, 255, 0.1);
+      transition-delay: 0s !important;
+      z-index: 10;
+    }
+
+    .plan-header {
+      padding: 28px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+      background: rgba(255, 255, 255, 0.01);
+    }
+
+    .plan-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.03);
+      padding: 8px;
+      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+    }
+
+    .plan-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .plan-icon svg {
+      width: 24px;
+      height: 24px;
+      stroke-width: 2;
+      color: var(--blue-l);
+    }
+
+    .plan-name {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.5px;
+    }
+
+    .plan-pricing-wrapper {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .pricing-tier {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.02);
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      transition: border-color 0.3s ease, background 0.3s ease, transform 0.3s ease;
+      will-change: transform;
+    }
+
+    .pricing-tier:hover {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(26, 107, 255, 0.2);
+      transform: scale(1.01);
+    }
+
+    .price-info {
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+    }
+
+    .price {
+      font-size: 26px;
+      font-weight: 800;
+      color: #fff;
+      font-family: 'DM Mono', monospace;
+      letter-spacing: -1px;
+    }
+
+    .duration {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text3);
+    }
+
+    .buy-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 20px;
+      background: rgba(26, 107, 255, 0.1);
+      border: 1px solid rgba(26, 107, 255, 0.4);
+      border-radius: 12px;
+      color: var(--blue-pale);
+      font-family: 'Instrument Sans', sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      text-decoration: none;
+    }
+
+    .buy-btn:hover {
+      background: var(--blue);
+      color: #fff;
+      box-shadow: 0 0 15px rgba(26, 107, 255, 0.4);
+      transform: scale(1.03);
+    }
+
+    .plan-card.popular {
+      border: 1px solid rgba(234, 179, 8, 0.3);
+      background: linear-gradient(180deg, rgba(234, 179, 8, 0.05) 0%, rgba(5, 10, 21, 0.98) 100%);
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.7);
+      transform: scale(1) translateZ(0);
+      z-index: 2;
+      will-change: transform;
+    }
+
+    .plan-card.popular.active:hover {
+      border-color: rgba(234, 179, 8, 0.6);
+      box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 0.9), 0 0 40px rgba(234, 179, 8, 0.2);
+      transition-delay: 0s !important;
+      z-index: 10;
+    }
+
+    .plan-card.featured {
+      border: 1px solid rgba(22, 163, 74, 0.4);
+      background: linear-gradient(180deg, rgba(22, 163, 74, 0.12) 0%, rgba(5, 10, 21, 0.98) 100%);
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.7);
+      transform: scale(1) translateZ(0);
+      z-index: 2;
+      will-change: transform;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    .plan-card.featured.active:hover {
+      border-color: rgba(34, 197, 94, 0.6);
+      box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 0.9), 0 0 40px rgba(34, 197, 94, 0.2);
+      transition-delay: 0s !important;
+      z-index: 10;
+    }
+
+    .plan-card.featured .plan-name {
+      background: linear-gradient(90deg, #22c55e 0%, #ffffff 50%, #22c55e 100%);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: shimmer-left 4s linear infinite;
+      filter: drop-shadow(0 0 8px rgba(34, 197, 94, 0.4));
+    }
+
+    .plan-card.dark-power .plan-name {
+      background: linear-gradient(90deg, #7f1d1d 0%, #020617 50%, #7f1d1d 100%);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: shimmer-left 4s linear infinite;
+      filter: drop-shadow(0 0 5px rgba(153, 27, 27, 0.2));
+    }
+
+    @keyframes shimmer-left {
+      0% {
+        background-position: 200% center;
+      }
+
+      100% {
+        background-position: -200% center;
+      }
+    }
+
+    .plan-card.special {
+      border: 1px solid rgba(236, 72, 153, 0.3);
+      background: linear-gradient(180deg, rgba(236, 72, 153, 0.05) 0%, rgba(5, 10, 21, 0.98) 100%);
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.7);
+      transform: scale(1) translateZ(0);
+      z-index: 2;
+      will-change: transform;
+    }
+
+    .plan-card.special.active:hover {
+      border-color: rgba(236, 72, 153, 0.6);
+      box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 0.9), 0 0 40px rgba(236, 72, 153, 0.2);
+      transition-delay: 0s !important;
+      z-index: 10;
+    }
+
+    .plan-card.dark-power {
+      border: 1px solid rgba(153, 27, 27, 0.3);
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.5) 0%, rgba(2, 6, 23, 0.8) 100%);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.7);
+      transform: scale(1) translateZ(0);
+      z-index: 2;
+      will-change: transform;
+    }
+
+    .plan-card.dark-power.active:hover {
+      border-color: rgba(153, 27, 27, 0.5);
+      box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 1), 0 0 30px rgba(153, 27, 27, 0.15);
+      transition-delay: 0s !important;
+      z-index: 10;
+    }
+
+    .plan-card.light-popular {
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(5, 10, 21, 0.98) 100%);
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.7);
+      transform: scale(1) translateZ(0);
+      z-index: 2;
+      will-change: transform;
+    }
+
+    .plan-card.light-popular.active:hover {
+      border-color: rgba(255, 255, 255, 0.4);
+      box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 0.9), 0 0 40px rgba(255, 255, 255, 0.1);
+      transition-delay: 0s !important;
+      z-index: 10;
+    }
+
+    .plan-card.light-popular .plan-name {
+      background: linear-gradient(90deg, #ffffff 0%, #a0a8c0 50%, #ffffff 100%);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: shimmer-left 4s linear infinite;
+      filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.2));
+    }
+
+    .plan-card.red-glow {
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      background: linear-gradient(180deg, rgba(239, 68, 68, 0.05) 0%, rgba(5, 10, 21, 0.98) 100%);
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.7);
+      transform: scale(1) translateZ(0);
+      z-index: 2;
+      will-change: transform;
+    }
+
+    .plan-card.red-glow.active:hover {
+      border-color: rgba(239, 68, 68, 0.6);
+      box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 0.9), 0 0 40px rgba(239, 68, 68, 0.2);
+      transition-delay: 0s !important;
+      z-index: 10;
+    }
+
+    .plan-card.red-glow .plan-name {
+      background: linear-gradient(90deg, #ef4444 0%, #ffffff 50%, #ef4444 100%);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: shimmer-left 4s linear infinite;
+      filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.4));
+    }
+
+    .plan-badge {
+      position: absolute;
+      top: 15px;
+      right: 15px;
+      background: #22c55e;
+      color: #050a15;
+      font-size: 10px;
+      font-weight: 800;
+      padding: 4px 12px;
+      border-radius: 100px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .plan-features {
+      padding: 0 24px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      flex: 1;
+    }
+
+    .feature {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .feature::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--blue-l);
+      box-shadow: 0 0 8px var(--blue);
+    }
+
+    .feat-val {
+      font-weight: 600;
+      color: var(--text);
+      font-family: 'DM Mono', monospace;
+      font-size: 14px;
+    }
+
+    .feat-lbl {
+      color: var(--text2);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    /* ── ADDONS LIST ── */
+    .addons-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 100%;
+      max-width: 900px;
+      margin: 0 auto 60px;
+    }
+
+    .addon-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      transition: all 0.3s;
+      -webkit-backdrop-filter: blur(16px);
+      backdrop-filter: blur(16px);
+    }
+
+    .addon-item:hover {
+      background: var(--surface-hover);
+      border-color: var(--border-hover);
+      transform: translateX(5px);
+    }
+
+    .addon-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .addon-price {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--blue-l);
+      font-family: 'DM Mono', monospace;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    @media (max-width: 768px) {
+
+      .showcase,
+      .showcase.reverse {
+        flex-direction: column;
+      }
+
+      .hero-title {
+        font-size: 42px;
+      }
+
+      .addon-item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+      }
+
+      .addon-price {
+        width: 100%;
+        justify-content: space-between;
+      }
+    }
+
+    /* ── FOOTER ── */
+    .footer {
+      width: 100%;
+      padding: 40px 20px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text3);
+      font-family: 'DM Mono', monospace;
+      border-top: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.4);
+      margin-top: 40px;
+    }
+
+    .footer a {
+      color: var(--blue-l);
+      text-decoration: none;
+      transition: color 0.3s;
+    }
+
+    .footer a:hover {
+      color: var(--text);
+    }
+
+    /* ── DESIGNER SECTION DIVIDER ── */
+    .designer-section-divider {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      margin-bottom: 40px;
+      width: 100%;
+    }
+
+    .divider-line {
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(26, 107, 255, 0.4), transparent);
+    }
+
+    .divider-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      background: rgba(26, 107, 255, 0.1);
+      border: 1px solid rgba(26, 107, 255, 0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--blue-l);
+      box-shadow: 0 0 30px rgba(26, 107, 255, 0.15);
+      animation: pulseGlow 3s ease-in-out infinite;
+    }
+
+    .divider-icon svg {
+      width: 22px;
+      height: 22px;
+    }
+
+    @keyframes pulseGlow {
+
+      0%,
+      100% {
+        box-shadow: 0 0 20px rgba(26, 107, 255, 0.15);
+      }
+
+      50% {
+        box-shadow: 0 0 40px rgba(26, 107, 255, 0.3);
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="main-bg"></div>
+  <div class="bg-dots"></div>
+  <canvas id="particles-canvas"></canvas>
+
+  <nav class="nav">
+    <a href="index.html#" class="nav-logo">Resemble</a>
+    <div class="nav-links">
+      <a href="index.html#features" class="nav-link">Features</a>
+      <a href="index.html#store" class="nav-link">AutoBuy</a>
+      <a href="index.html#storedesigner" class="nav-link">Designer</a>
+      <a href="index.html#addons" class="nav-link">Addons</a>
+      <a href="index.html#" class="nav-link">Showcase</a>
+      <a href="index.html#" class="nav-link">Exchange</a>
+      <a href="index.html#" class="nav-link">Projects</a>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <div class="hero-badge">
+      <div class="hero-badge-dot"></div>
+      <span>Trusted By Over <b>850</b> Customers</span>
+    </div>
+    <h1 class="hero-title">Dominate With <span>Resemble</span> API & C2 Network</h1>
+    <p class="hero-desc">Experience unparalleled power, seamless integration, and advanced methods. Join the exclusive
+      network simulation platform built for professionals. </p>
+    <div class="hero-btns">
+      <a href="index.html#store" class="btn-main">View Pricing</a>
+      <a href="index.html#" class="btn-sec">Join Discord</a>
+    </div>
+
+    <a href="index.html#features" class="scroll-indicator">
+      Scroll Down
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 5v14M19 12l-7 7-7-7" />
+      </svg>
+    </a>
+  </section>
+
+  <section id="features" class="section">
+    <!-- Showcase 1 -->
+    <div class="showcase">
+      <div class="showcase-content reveal-left">
+        <div class="showcase-label">Advanced CNC</div>
+        <h2 class="showcase-title">Total Control at Your Fingertips</h2>
+        <p class="showcase-desc">Our cutting-edge terminal interface gives you immediate access to all stress testing
+          methods, API integrations, and live attack monitoring. Manage concurrents, cooldowns, and targets seamlessly.
+        </p>
+
+        <div class="feature-list">
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="zap"></i></div>
+            <div>
+              <div class="feature-list-text">Zero Cooldown Options</div>
+              <div class="feature-list-sub">Attack back-to-back with zero delay on supported plans.</div>
+            </div>
+          </div>
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="lock"></i></div>
+            <div>
+              <div class="feature-list-text">Private & RAW Methods</div>
+              <div class="feature-list-sub">Access highly guarded methods yielding 300-500gbps per concurrent.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="showcase-img-wrap reveal-right">
+        <img src="imagebig3.jpg" alt="Resemble CNC Interface" class="showcase-img">
+      </div>
+    </div>
+
+    <!-- Showcase 2 -->
+    <div class="showcase reverse" style="margin-top: 100px;">
+      <div class="showcase-content reveal-right">
+        <div class="showcase-label">Extreme Power</div>
+        <h2 class="showcase-title">Unmatched Network Capabilities</h2>
+        <p class="showcase-desc">Whether you need standard L4/L7 methods or exclusive Botnet and Raw methods,
+          Resemble delivers. Capable of pushing terabytes of traffic across multiple concurrents.</p>
+
+        <div class="feature-list">
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="globe"></i></div>
+            <div>
+              <div class="feature-list-text">Botnet Integration</div>
+              <div class="feature-list-sub">Exclusive access to Botnet methods hitting 1-2tbps per concurrent.</div>
+            </div>
+          </div>
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="home"></i></div>
+            <div>
+              <div class="feature-list-text">HomeHolder API</div>
+              <div class="feature-list-sub">Specialized plans offering up to 1,000,000 seconds of execution time.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="showcase-img-wrap reveal-left">
+        <!-- Assuming user has an imagebig.png or jpg, fallback if not -->
+        <img src="imagebig2.jpg" alt="Network Stats" class="showcase-img">
+      </div>
+    </div>
+
+    <!-- Showcase 3 -->
+    <div class="showcase" style="margin-top: 100px;">
+      <div class="showcase-content reveal-left">
+        <div class="showcase-label">Developer API</div>
+        <h2 class="showcase-title">Seamless Integration</h2>
+        <p class="showcase-desc">Incorporate the immense power of Resemble directly into your own infrastructure with
+          our lightning-fast API. Full JSON responses, precise error tracking, and millisecond dispatch times.</p>
+
+        <div class="feature-list">
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="plug"></i></div>
+            <div>
+              <div class="feature-list-text">Easy Implementation</div>
+              <div class="feature-list-sub">Simple GET/POST endpoints that integrate in minutes.</div>
+            </div>
+          </div>
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="bar-chart-2"></i></div>
+            <div>
+              <div class="feature-list-text">Detailed Response Data</div>
+              <div class="feature-list-sub">Get insights on your attack parameters, ongoing limits, and target validity.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="showcase-img-wrap reveal-right">
+        <img src="api_response.png" alt="Resemble API Response" class="showcase-img">
+      </div>
+    </div>
+
+    <!-- Showcase 4 (Server Specs) -->
+    <div class="showcase reverse" style="margin-top: 100px;">
+      <div class="showcase-content reveal-right">
+        <div class="showcase-label">Dedicated Infrastructure</div>
+        <h2 class="showcase-title">Enterprise-Grade Hardware</h2>
+        <p class="showcase-desc">We don't rely on cheap VPS servers. Resemble runs on dedicated metal, featuring dual
+          AMD EPYC 32-core processors and massive memory pools to ensure stability even under the heaviest loads.</p>
+
+        <div class="feature-list">
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="server"></i></div>
+            <div>
+              <div class="feature-list-text">AMD EPYC CPUs</div>
+              <div class="feature-list-sub">Unmatched computational power for generating heavy L7 requests.</div>
+            </div>
+          </div>
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="hard-drive"></i></div>
+            <div>
+              <div class="feature-list-text">High-Speed NVMe Arrays</div>
+              <div class="feature-list-sub">Terabytes of ultra-fast storage handling infinite concurrents.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="showcase-img-wrap reveal-left">
+        <img src="server.png" alt="Server Hardware Monitor" class="showcase-img">
+      </div>
+    </div>
+
+    <!-- Showcase 5 (Raw Power) -->
+    <div class="showcase" style="margin-top: 100px;">
+      <div class="showcase-content reveal-left">
+        <div class="showcase-label">Unrivaled Power</div>
+        <h2 class="showcase-title">The Peak of Network Dominance</h2>
+        <p class="showcase-desc">Resemble isn't just about variety; it's about sheer, overwhelming force. Our network
+          infrastructure is engineered to deliver massive traffic volume, capable of shattering even the most robust
+          enterprise-grade protection systems.</p>
+
+        <div class="feature-list">
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="zap"></i></div>
+            <div>
+              <div class="feature-list-text">1.2 Tb/s+ Guaranteed Power</div>
+              <div class="feature-list-sub">Push your targets to the limit with unmatched packet density and bandwidth.
+              </div>
+            </div>
+          </div>
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="shield-off"></i></div>
+            <div>
+              <div class="feature-list-text">Dynamic Bypass Engine</div>
+              <div class="feature-list-sub">Automatically adapts to target mitigation behavior for maximum impact.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="showcase-img-wrap reveal-right">
+        <img src="power1tb.png" alt="Raw Power Graph" class="showcase-img">
+      </div>
+    </div>
+  </section>
+
+  <section id="store" class="section">
+    <div class="section-header reveal">
+      <h2 class="section-title">Pricing Plans</h2>
+      <p class="section-subtitle">Choose the perfect tier for your needs. Monthly and Lifetime options available.</p>
+    </div>
+
+    <div class="plans-grid">
+      <!-- Silver -->
+      <div class="plan-card reveal">
+        <div class="plan-header">
+          <div class="plan-icon"><img src="planicons/silver.png" alt="Silver Icon"></div>
+          <h2 class="plan-name">Silver</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€40</span><span class="duration">/mo</span></div>
+            <a href="index.html#" class="buy-btn" data-sellauth-shop-id="242758" data-sellauth-product-id="692095"
+              data-sellauth-variant-id="1100843">Purchase</a>
+          </div>
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€120</span><span class="duration">/life</span></div>
+            <a href="index.html#" class="buy-btn" data-sellauth-shop-id="242758" data-sellauth-product-id="692095"
+              data-sellauth-variant-id="1100844">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">120</span> <span class="feat-lbl">Seconds Time</span></div>
+          <div class="feature"><span class="feat-val">0.00</span> <span class="feat-lbl">Seconds Cooldown</span></div>
+          <div class="feature"><span class="feat-val">1</span> <span class="feat-lbl">Concurrent</span></div>
+          <div class="feature"><span class="feat-val">Default Methods</span> <span class="feat-lbl">10-15 gbps/c</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Gold -->
+      <div class="plan-card reveal popular" style="transition-delay: 0.1s">
+        <div class="plan-badge" style="background: #eab308; color: #000;">Most Popular</div>
+        <div class="plan-header">
+          <div class="plan-icon"><img src="planicons/gold.png" alt="Gold Icon"></div>
+          <h2 class="plan-name" style="color: #eab308;">Gold</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€50</span><span class="duration">/mo</span></div>
+            <a href="index.html#" class="buy-btn" data-sellauth-shop-id="242758" data-sellauth-product-id="692123"
+              data-sellauth-variant-id="1100889">Purchase</a>
+          </div>
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€140</span><span class="duration">/life</span></div>
+            <a href="index.html#" class="buy-btn" data-sellauth-shop-id="242758" data-sellauth-product-id="692123"
+              data-sellauth-variant-id="1100890">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">200</span> <span class="feat-lbl">Seconds Time</span></div>
+          <div class="feature"><span class="feat-val">0.00</span> <span class="feat-lbl">Seconds Cooldown</span></div>
+          <div class="feature"><span class="feat-val">3</span> <span class="feat-lbl">Concurrents</span></div>
+          <div class="feature"><span class="feat-val">VIP & Star Methods</span> <span class="feat-lbl">60-70
+              gbps/c</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Diamond -->
+      <div class="plan-card reveal" style="transition-delay: 0.2s">
+        <div class="plan-header">
+          <div class="plan-icon"><img src="planicons/diamond.png" alt="Diamond Icon"></div>
+          <h2 class="plan-name">Diamond</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€70</span><span class="duration">/mo</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€180</span><span class="duration">/life</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">400</span> <span class="feat-lbl">Seconds Time</span></div>
+          <div class="feature"><span class="feat-val">0.00</span> <span class="feat-lbl">Seconds Cooldown</span></div>
+          <div class="feature"><span class="feat-val">5</span> <span class="feat-lbl">Concurrents</span></div>
+          <div class="feature"><span class="feat-val">VIP & Star Methods</span> <span class="feat-lbl">60-70
+              gbps/c</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Champion -->
+      <div class="plan-card reveal" style="transition-delay: 0.3s">
+        <div class="plan-header">
+          <div class="plan-icon"><img src="planicons/ruby.png" alt="Champion Icon"></div>
+          <h2 class="plan-name">Champion</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€85</span><span class="duration">/mo</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€200</span><span class="duration">/life</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">600</span> <span class="feat-lbl">Seconds Time</span></div>
+          <div class="feature"><span class="feat-val">0.00</span> <span class="feat-lbl">Seconds Cooldown</span></div>
+          <div class="feature"><span class="feat-val">8</span> <span class="feat-lbl">Concurrents</span></div>
+          <div class="feature"><span class="feat-val">VIP & Star Methods</span> <span class="feat-lbl">60-70
+              gbps/c</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Extreme -->
+      <div class="plan-card reveal featured" style="transition-delay: 0.4s">
+        <div class="plan-badge">Most Powerful</div>
+
+        <div class="plan-header">
+          <div class="plan-icon"><img src="planicons/emerald.png" alt="Extreme Icon"></div>
+          <h2 class="plan-name" style="color: #22c55e;">Extreme</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€120</span><span class="duration">/mo</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€300</span><span class="duration">/life</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">1000</span> <span class="feat-lbl">Seconds Time</span></div>
+          <div class="feature"><span class="feat-val">0.00</span> <span class="feat-lbl">Seconds Cooldown</span></div>
+          <div class="feature"><span class="feat-val">12</span> <span class="feat-lbl">Concurrents</span></div>
+          <div class="feature"><span class="feat-val">VIP, Star, Private Methods</span> <span class="feat-lbl">300
+              gbps/c</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Plans -->
+    <div class="section-header reveal">
+      <h2 class="section-title">API & Special Access</h2>
+    </div>
+
+    <div class="plans-grid">
+      <div class="plan-card reveal">
+        <div class="plan-header">
+          <div class="plan-icon"><img src="planicons/api.png" alt="HomeHolder Icon">
+          </div>
+          <h2 class="plan-name">HomeHolder API</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€25</span><span class="duration">/mo</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€140</span><span class="duration">/life</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">86k - 1M</span> <span class="feat-lbl">Seconds Time</span></div>
+          <div class="feature"><span class="feat-val">0.00</span> <span class="feat-lbl">Seconds Cooldown</span></div>
+          <div class="feature"><span class="feat-val">1-20</span> <span class="feat-lbl">Concurrents</span></div>
+          <div class="feature"><span class="feat-val">HomeHolder Methods</span> <span class="feat-lbl">1-2 gbps/c</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="plan-card reveal special" style="transition-delay: 0.1s">
+        <div class="plan-badge" style="background: #ff59ac; color: #fff;">Most Popular</div>
+        <div class="plan-header">
+          <div class="plan-icon"><img src="planicons/api.png" alt="API Icon"></div>
+          <h2 class="plan-name" style="color: #ff59ac;">API Access</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€60</span><span class="duration">/mo</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€200</span><span class="duration">/life</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">300</span> <span class="feat-lbl">Seconds Time</span></div>
+          <div class="feature"><span class="feat-val">2.00</span> <span class="feat-lbl">Seconds Cooldown</span></div>
+          <div class="feature"><span class="feat-val">4</span> <span class="feat-lbl">Concurrents</span></div>
+          <div class="feature"><span class="feat-val">VIP & Star Methods</span> <span class="feat-lbl">60-70
+              gbps/c</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="plan-card reveal" style="transition-delay: 0.2s">
+        <div class="plan-header">
+          <div class="plan-icon"><img src="planicons/api.png" alt="Priv API Icon">
+          </div>
+          <h2 class="plan-name">Layer7 API</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€50</span><span class="duration">/mo</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€140</span><span class="duration">/life</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">300</span> <span class="feat-lbl">Seconds Time</span></div>
+          <div class="feature"><span class="feat-val">0.00</span> <span class="feat-lbl">Seconds Cooldown</span></div>
+          <div class="feature"><span class="feat-val">2</span> <span class="feat-lbl">Concurrents</span></div>
+          <div class="feature"><span class="feat-val">Layer 7 Methods</span> <span class="feat-lbl">1-4m rqs/c</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="plan-card reveal red-glow" style="transition-delay: 0.3s">
+        <div class="plan-badge" style="background: #e2000093; color: #fff;">Popular</div>
+        <div class="plan-header" style="background: rgba(239, 68, 68, 0.05);">
+          <div class="plan-icon"><img src="planicons/api.png" alt="Raw API Icon"></div>
+          <h2 class="plan-name" style="color: #bc0000;">Raw API</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€90</span><span class="duration">/mo</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">230</span><span class="duration">/life</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">60-3000</span> <span class="feat-lbl">Seconds Time</span></div>
+          <div class="feature"><span class="feat-val">0-30</span> <span class="feat-lbl">Seconds Cooldown</span></div>
+          <div class="feature"><span class="feat-val">1-23</span> <span class="feat-lbl">Concurrents</span></div>
+          <div class="feature"><span class="feat-val">RAW Methods</span> <span class="feat-lbl">300-500gbps/c</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="plan-card reveal dark-power" style="transition-delay: 0.4s">
+        <div class="plan-badge" style="background: #450a0a; color: #fff; border: 1px solid rgba(153, 27, 27, 0.4);">Top
+          Power</div>
+        <div class="plan-header" style="border-bottom: 1px solid rgba(153, 27, 27, 0.1);">
+          <div class="plan-icon" style="background: rgba(0,0,0,0.4);"><img src="planicons/api.png"
+              alt="Botnet API Icon">
+          </div>
+          <h2 class="plan-name" style="color: #9021217f;">Botnet API</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€200</span><span class="duration">/mo</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€350</span><span class="duration">/life</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">60-4000</span> <span class="feat-lbl">Seconds Time</span></div>
+          <div class="feature"><span class="feat-val">0-60</span> <span class="feat-lbl">Seconds Cooldown</span></div>
+          <div class="feature"><span class="feat-val">1-20</span> <span class="feat-lbl">Concurrents</span></div>
+          <div class="feature"><span class="feat-val">Botnet Methods</span> <span class="feat-lbl">1-2tbps/c</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── DESIGNER SHOWCASES ── -->
+  <section id="designer-features" class="section">
+
+    <!-- Decorative Divider -->
+    <div class="designer-section-divider reveal">
+      <div class="divider-line"></div>
+      <div class="divider-icon"><i data-lucide="wand-2"></i></div>
+      <div class="divider-line"></div>
+    </div>
+
+    <div class="section-header reveal" style="margin-bottom: 80px;">
+      <div class="showcase-label" style="text-align: center; margin-bottom: 16px; font-size: 13px;">Resemble Designer
+        Suite</div>
+      <h2 class="section-title" style="font-size: 48px; letter-spacing: -2px;">
+        Design It. <span
+          style="background: linear-gradient(-45deg, var(--blue), #ffffff, var(--blue-l), #ffffff, var(--blue)); background-size: 400% 400%; -webkit-text-fill-color: transparent; -webkit-background-clip: text; animation: gradientShift 6s linear infinite;">Export
+          It.</span> Own It.
+      </h2>
+      <p class="section-subtitle" style="max-width: 700px;">
+        See how the Resemble Designer transforms your creative vision into stunning terminal interfaces — from the
+        design tool straight to the live terminal.
+      </p>
+    </div>
+
+    <!-- Designer Showcase 1: Draw Tool -->
+    <div class="showcase">
+      <div class="showcase-content reveal-left">
+        <div class="showcase-label">Professional Design Tool</div>
+        <h2 class="showcase-title">Create Stunning Terminal Designs</h2>
+        <p class="showcase-desc">The Resemble Designer is a powerful web-based tool that lets you craft pixel-perfect
+          ASCII
+          art interfaces. Draw, underline, add backgrounds — all with an intuitive UI built for speed and precision.</p>
+
+        <div class="feature-list">
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="pen-tool"></i></div>
+            <div>
+              <div class="feature-list-text">Advanced Draw Tools</div>
+              <div class="feature-list-sub">Draw, underline, and paint backgrounds with a single click.</div>
+            </div>
+          </div>
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="download"></i></div>
+            <div>
+              <div class="feature-list-text">Export & Download</div>
+              <div class="feature-list-sub">Export your designs instantly and deploy them straight to your terminal.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="showcase-img-wrap reveal-right">
+        <img src="home.png" alt="Resemble Designer Draw Tool" class="showcase-img">
+      </div>
+    </div>
+
+    <!-- Designer Showcase 2: Terminal Welcome Result -->
+    <div class="showcase reverse" style="margin-top: 100px;">
+      <div class="showcase-content reveal-right">
+        <div class="showcase-label">Live Terminal Output</div>
+        <h2 class="showcase-title">From Design to Reality</h2>
+        <p class="showcase-desc">See your designs come alive in real terminal sessions. What you create in the Designer
+          renders perfectly in any terminal — complete with ASCII art, borders, colored text, and branded layouts.</p>
+
+        <div class="feature-list">
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="monitor"></i></div>
+            <div>
+              <div class="feature-list-text">Pixel-Perfect Rendering</div>
+              <div class="feature-list-sub">Your design translates 1:1 into the live terminal environment.</div>
+            </div>
+          </div>
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="type"></i></div>
+            <div>
+              <div class="feature-list-text">Custom Branding</div>
+              <div class="feature-list-sub">Add your name, ASCII logos, and personalized welcome screens.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="showcase-img-wrap reveal-left">
+        <img src="home2.png" alt="Designer Terminal Welcome Output" class="showcase-img">
+      </div>
+    </div>
+
+    <!-- Designer Showcase 3: Fade Tool -->
+    <div class="showcase" style="margin-top: 100px;">
+      <div class="showcase-content reveal-left">
+        <div class="showcase-label">Gradient System</div>
+        <h2 class="showcase-title">Beautiful Color Gradients</h2>
+        <p class="showcase-desc">The Fade Tool lets you apply stunning gradient color schemes to your terminal designs.
+          Choose from curated presets like Icy Royal, Midnight, Silver Sky, and Electric Blue — or create your own
+          custom gradients.</p>
+
+        <div class="feature-list">
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="palette"></i></div>
+            <div>
+              <div class="feature-list-text">Curated Color Presets</div>
+              <div class="feature-list-sub">Instantly apply professional gradients with one click.</div>
+            </div>
+          </div>
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="sparkles"></i></div>
+            <div>
+              <div class="feature-list-text">Custom Gradient Builder</div>
+              <div class="feature-list-sub">Save your own presets and build unique color schemes.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="showcase-img-wrap reveal-right">
+        <img src="methods.png" alt="Resemble Designer Fade Tool" class="showcase-img">
+      </div>
+    </div>
+
+    <!-- Designer Showcase 4: Terminal Methods Result -->
+    <div class="showcase reverse" style="margin-top: 100px;">
+      <div class="showcase-content reveal-right">
+        <div class="showcase-label">Full Interface Design</div>
+        <h2 class="showcase-title">Complete Terminal Interfaces</h2>
+        <p class="showcase-desc">Design complex, multi-panel terminal interfaces with method lists, network status
+          indicators, categorized commands, and branded sidebars — all rendered beautifully in the live terminal.</p>
+
+        <div class="feature-list">
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="layout-dashboard"></i></div>
+            <div>
+              <div class="feature-list-text">Multi-Panel Layouts</div>
+              <div class="feature-list-sub">Create complex split-panel designs with sidebars and tables.</div>
+            </div>
+          </div>
+          <div class="feature-list-item">
+            <div class="feature-list-icon"><i data-lucide="paintbrush"></i></div>
+            <div>
+              <div class="feature-list-text">Color-Coded Elements</div>
+              <div class="feature-list-sub">VIP, RAW, STAR — each category gets its own distinct color coding.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="showcase-img-wrap reveal-left">
+        <img src="methods2.png" alt="Designer Terminal Methods Output" class="showcase-img">
+      </div>
+    </div>
+  </section>
+
+  <section id="storedesigner" class="section">
+    <div class="section-header reveal">
+      <h2 class="section-title">Resemble Designer Prices</h2>
+      <p class="section-subtitle">Take control of your workflow with our advanced suite of professional design tool.
+      </p>
+    </div>
+
+    <div class="plans-grid">
+      <!-- Standard -->
+      <div class="plan-card reveal">
+        <div class="plan-header">
+          <div class="plan-icon"><i data-lucide="layout"></i></div>
+          <h2 class="plan-name">Standard</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€15</span><span class="duration">/week</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">2</span> <span class="feat-lbl">Exports </span></div>
+          <div class="feature"><span class="feat-val">Basic</span> <span class="feat-lbl">Templates Library</span></div>
+          <div class="feature"><span class="feat-val">Community</span> <span class="feat-lbl">Support</span></div>
+        </div>
+      </div>
+
+      <!-- Expert -->
+      <div class="plan-card reveal"
+        style="transition-delay: 0.1s; border-color: rgba(26, 107, 255, 0.3); background: linear-gradient(180deg, rgba(26, 107, 255, 0.05) 0%, rgba(5, 10, 21, 0.98) 100%);">
+        <div class="plan-badge" style="background: var(--blue); color: #fff;">Most Popular</div>
+        <div class="plan-header">
+          <div class="plan-icon"><i data-lucide="palette"></i></div>
+          <h2 class="plan-name" style="color: var(--blue-l);">Expert</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€50</span><span class="duration">/week</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">7</span> <span class="feat-lbl">Exports </span></div>
+          <div class="feature"><span class="feat-val">Star</span> <span class="feat-lbl">Templates Library</span></div>
+          <div class="feature"><span class="feat-val">Priority Community</span> <span class="feat-lbl">Discord
+              Support</span></div>
+        </div>
+      </div>
+
+      <!-- Business -->
+      <div class="plan-card reveal light-popular" style="transition-delay: 0.2s">
+        <div class="plan-badge" style="background: #ffffff; color: #000000;">Ultimate</div>
+        <div class="plan-header">
+          <div class="plan-icon"><i data-lucide="wand-2"></i></div>
+          <h2 class="plan-name">Business</h2>
+        </div>
+        <div class="plan-pricing-wrapper">
+          <div class="pricing-tier">
+            <div class="price-info"><span class="price">€110</span><span class="duration">/week</span></div>
+            <a href="index.html#" class="buy-btn">Purchase</a>
+          </div>
+        </div>
+        <div class="plan-features">
+          <div class="feature"><span class="feat-val">15</span> <span class="feat-lbl">Exports</span></div>
+          <div class="feature"><span class="feat-val">Star & King</span> <span class="feat-lbl">Templates Library</span>
+          </div>
+          <div class="feature"><span class="feat-val">Custom</span> <span class="feat-lbl">Design Systems & Instant
+              Support</span></div>
+        </div>
+      </div>
+    </div>
+    </div>
+  </section>
+
+  <section id="addons" class="section">
+    <!-- Designer Addons -->
+    <div class="section-header reveal">
+      <h2 class="section-title">Resemble Designer Addons</h2>
+      <p class="section-subtitle">Boost your design capabilities with specific add-on upgrades.</p>
+    </div>
+
+    <div class="addons-list" style="margin-bottom: 60px;">
+      <div class="addon-item reveal">
+        <span class="addon-name">+1 Export</span>
+        <div class="addon-price">€10 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+    </div>
+
+    <!-- General Addons -->
+    <div class="section-header reveal" style="margin-top: 60px;">
+      <h2 class="section-title">Resemble Addons</h2>
+      <p class="section-subtitle">Enhance your existing plan with powerful upgrades.</p>
+    </div>
+
+    <div class="addons-list">
+      <div class="addon-item reveal">
+        <span class="addon-name">Power Saving Bypass</span>
+        <div class="addon-price">€50-200 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+      <div class="addon-item reveal" style="transition-delay: 0.05s">
+        <span class="addon-name">Spam Bypass</span>
+        <div class="addon-price">€35-70 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+      <div class="addon-item reveal" style="transition-delay: 0.1s">
+        <span class="addon-name">+100 Seconds Time</span>
+        <div class="addon-price">€10-30 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+      <div class="addon-item reveal" style="transition-delay: 0.15s">
+        <span class="addon-name">+1 Concurrent</span>
+        <div class="addon-price">€15 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+      <div class="addon-item reveal" style="transition-delay: 0.2s">
+        <span class="addon-name">+1 Concurrent Life</span>
+        <div class="addon-price">€50 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+      <div class="addon-item reveal" style="transition-delay: 0.25s">
+        <span class="addon-name">+1 Concurrent (priv)</span>
+        <div class="addon-price">€50 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+      <div class="addon-item reveal" style="transition-delay: 0.3s">
+        <span class="addon-name">+1 Concurrent (raw)</span>
+        <div class="addon-price">€100 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+      <div class="addon-item reveal" style="transition-delay: 0.35s">
+        <span class="addon-name">Access To Star Methods</span>
+        <div class="addon-price">€40 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+      <div class="addon-item reveal" style="transition-delay: 0.4s">
+        <span class="addon-name">Access To Priv Methods</span>
+        <div class="addon-price">€70 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+      <div class="addon-item reveal" style="transition-delay: 0.45s">
+        <span class="addon-name">Access To RAW Methods</span>
+        <div class="addon-price">€100 <a href="index.html#" class="buy-btn">Contact to Buy</a></div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <p>&copy; 2026 Resemble. All rights reserved.</p>
+    <p style="margin-top: 8px;">Price can be different all depends what plan you have <a href="https://resemble.sh/cdn-cgi/l/email-protection#f695999882979582b6849385939b949a93d8859e">contact me</a> and ask &lt;3</p>
+  </footer>
+
+  <script data-cfasync="false" src="cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    // Intersection Observer for scroll reveal animations
+    document.addEventListener("DOMContentLoaded", () => {
+      lucide.createIcons();
+      const observerOptions = {
+        root: null,
+        rootMargin: '0px',
+        threshold: 0.1
+      };
+
+      const observer = new IntersectionObserver((entries, observer) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('active');
+            observer.unobserve(entry.target); // Optional: stop observing once revealed
+          }
+        });
+      }, observerOptions);
+
+      document.querySelectorAll('.reveal, .reveal-left, .reveal-right').forEach((el) => {
+        observer.observe(el);
+      });
+
+      // Sellauth Buttons integration placeholder
+      document.querySelectorAll('.buy-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          // alert('Sellauth checkout would open here!');
+        });
+      });
+
+      // Particles System
+      const canvas = document.getElementById('particles-canvas');
+      const ctx = canvas.getContext('2d');
+      let particles = [];
+
+      function initParticles() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        particles = [];
+        const particleCount = Math.min(Math.floor(window.innerWidth / 10), 150);
+        for (let i = 0; i < particleCount; i++) {
+          particles.push({
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            size: Math.random() * 2 + 0.5,
+            speedX: (Math.random() - 0.5) * 0.3,
+            speedY: (Math.random() - 0.5) * 0.3,
+            opacity: Math.random() * 0.4 + 0.1
+          });
+        }
+      }
+
+      function animateParticles() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        particles.forEach(p => {
+          p.x += p.speedX;
+          p.y += p.speedY;
+
+          if (p.x < 0) p.x = canvas.width;
+          if (p.x > canvas.width) p.x = 0;
+          if (p.y < 0) p.y = canvas.height;
+          if (p.y > canvas.height) p.y = 0;
+
+          ctx.fillStyle = `rgba(77, 143, 255, ${p.opacity})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        requestAnimationFrame(animateParticles);
+      }
+
+      window.addEventListener('resize', () => {
+        initParticles();
+      });
+
+      initParticles();
+      animateParticles();
+
+      // Nav scroll effect
+      window.addEventListener('scroll', () => {
+        const nav = document.querySelector('.nav');
+        if (window.scrollY > 50) {
+          nav.classList.add('scrolled');
+        } else {
+          nav.classList.remove('scrolled');
+        }
+      });
+
+      // ── SELLAUTH INTEGRATION ──
+      // NOTE: Using API Key in frontend is for demo/dev purposes. 
+      // For production, use a backend proxy to keep your key secret.
+      const SELLAUTH_CONFIG = {
+        shopId: 242758,
+        apiKey: '5815916|1xfPR5guBjKoVB9dYi5sPjEvKrCF6aiBI36C4kUk9d85ce4f',
+        mappings: {
+          "silver": 692095,
+          "gold": 692123,
+          "diamond": 692128,
+          "champion": 692130,
+          "extreme": 692131,
+          "homeholder api": 692144,
+          "api access": 692134, // This matches "Normal API" in SellAuth
+          "priv api": 692136,
+          "raw api": 692139,
+          "Botnet api": 692141,
+          "standard": 744937,
+          "expert": 745171,
+          "business": 745178
+        }
+      };
+
+      async function syncSellAuth() {
+        try {
+          const response = await fetch(`https://api.sellauth.com/v1/shops/${SELLAUTH_CONFIG.shopId}/products`, {
+            headers: {
+              'Authorization': `Bearer ${SELLAUTH_CONFIG.apiKey}`,
+              'Accept': 'application/json'
+            }
+          });
+          const result = await response.json();
+          const products = result.data || [];
+
+          products.forEach(product => {
+            // Find card matching product name or manual ID
+            const cards = document.querySelectorAll('.plan-card');
+            let card = null;
+            cards.forEach(c => {
+              const planName = c.querySelector('.plan-name').innerText.trim().toLowerCase();
+              const prodName = product.name.trim().toLowerCase();
+
+              if (
+                planName === prodName ||
+                SELLAUTH_CONFIG.mappings[planName] === product.id ||
+                prodName.includes(planName) ||
+                (planName === 'standard' && prodName.includes('stantard'))
+              ) {
+                card = c;
+              }
+            });
+
+            if (card && product.variants) {
+              const tiers = card.querySelectorAll('.pricing-tier');
+              // Sort variants by price to match UI order
+              const sortedVariants = [...product.variants].sort((a, b) => parseFloat(a.price) - parseFloat(b.price));
+
+              sortedVariants.forEach((variant, idx) => {
+                if (tiers[idx]) {
+                  const priceEl = tiers[idx].querySelector('.price');
+                  const buyBtn = tiers[idx].querySelector('.buy-btn');
+                  if (priceEl) priceEl.innerText = `€${parseFloat(variant.price).toFixed(0)}`;
+                  if (buyBtn) {
+                    buyBtn.setAttribute('data-sellauth-product-id', product.id);
+                    buyBtn.setAttribute('data-sellauth-variant-id', variant.id);
+                    buyBtn.setAttribute('data-sellauth-shop-id', SELLAUTH_CONFIG.shopId);
+                    buyBtn.removeAttribute('href'); // Prevent jump
+                    buyBtn.style.cursor = 'pointer';
+                  }
+                }
+              });
+            }
+          });
+        } catch (err) {
+          console.error('SellAuth Sync Error:', err);
+        }
+      }
+
+      // Initialize SellAuth Clicks
+      document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.buy-btn');
+        if (!btn) return;
+
+        if (btn.hasAttribute('data-sellauth-product-id')) {
+          e.preventDefault();
+          const productId = btn.getAttribute('data-sellauth-product-id');
+          const variantId = btn.getAttribute('data-sellauth-variant-id');
+          const shopId = btn.getAttribute('data-sellauth-shop-id');
+
+          if (window.sellAuthEmbed) {
+            window.sellAuthEmbed.checkout(btn, {
+              cart: [{ productId: parseInt(productId), variantId: parseInt(variantId), quantity: 1 }],
+              shopId: parseInt(shopId),
+              modal: true
+            });
+          } else {
+            // Fallback to direct link if script not loaded
+            window.open(`https://resembleservices.mysellauth.com/checkout/${productId}?variant=${variantId}`, '_blank');
+          }
+        } else {
+          // If the button wasn't dynamically synced, it might be a hardcoded link or missing mapping
+          if (btn.getAttribute('href') === '#') {
+            e.preventDefault();
+            alert("BŁĄD: Ten plan nie został jeszcze powiązany z SellAuth. \n\nUpewnij się, że:\n1. W panelu SellAuth masz produkt o identycznej nazwie (np. 'Silver').\n2. Produkt ma przynajmniej jeden wariant z ceną.");
+          }
+        }
+      });
+
+      // Tilt Effect for Plan Cards
+      document.querySelectorAll('.plan-card').forEach(card => {
+        card.addEventListener('mouseenter', () => {
+          card.style.transition = 'transform 0.4s cubic-bezier(0.23, 1, 0.32, 1)';
+        });
+
+        card.addEventListener('mousemove', e => {
+          const rect = card.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+
+          const centerX = rect.width / 2;
+          const centerY = rect.height / 2;
+
+          const rotateX = (centerY - y) / 15; // More subtle rotation
+          const rotateY = (x - centerX) / 15;
+
+          card.style.transition = 'transform 0.1s ease-out';
+          card.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale(1.02) translateY(-10px)`;
+        });
+
+        card.addEventListener('mouseleave', () => {
+          card.style.transition = 'transform 0.6s cubic-bezier(0.23, 1, 0.32, 1)';
+          card.style.transform = '';
+        });
+      });
+
+      syncSellAuth();
+    });
+  </script>
+</body>
+
+</html>

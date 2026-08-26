@@ -45,20 +45,6 @@ The `initializeDatabase()` function creates and seeds:
 - Blacklist: Common malicious targets
 - System settings: 8 default configurations
 
-### KV Namespace (CAPI_KV)
-Auto-creates cache configuration:
-- `config:cache:ttl` - TTL values for user/method/settings caches
-- `config:concurrency:limits` - Global and per-user attack limits
-- `cache:methods:list` - Pre-allocated methods cache
-- `cache:settings` - Pre-allocated settings cache
-
-### R2 Buckets
-Organizes both buckets with directory structure:
-- `metadata/.initialized` - Initialization marker
-- `cache/.keep` - Cache storage directory
-- `uploads/.keep` - User uploads directory
-- `backups/.keep` - Backup storage directory
-
 ## Admin Endpoints
 
 ### Check System Status
@@ -68,11 +54,7 @@ GET /admin/init/status
 Response:
 {
   "database": true,
-  "kv": true,
-  "r2_assets": true,
-  "r2_user_assets": true,
   "database_healthy": true,
-  "kv_healthy": true,
   "ready": true
 }
 ```
@@ -104,15 +86,9 @@ Response:
 }
 ```
 
-## Auto-Initialization on Startup
+## Database Initialization
 
-The worker automatically initializes the database on the first incoming request if not already initialized. This is transparent and requires no manual intervention.
-
-**When auto-init occurs:**
-1. First request arrives at worker
-2. `dbInitialized` flag is false
-3. `Vault.initializeDatabase(env)` is called
-4. All tables are created with INSERT OR IGNORE
+The normal request path does not run migrations or seed data. After creating or replacing the D1 database, call `/admin/init` once, then verify the result with `/admin/init/status`.
 5. Flag is set to true
 6. Request proceeds normally
 

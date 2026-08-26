@@ -259,6 +259,11 @@ export async function ensureTables(env) {
       updated_at TEXT
     )`).run();
 
+    await DB.prepare('CREATE INDEX IF NOT EXISTS idx_logs_username_created_at ON logs (username, created_at DESC)').run();
+    await DB.prepare('CREATE INDEX IF NOT EXISTS idx_ongoing_status_expires_at ON ongoing_attacks (status, expires_at)').run();
+    await DB.prepare('CREATE INDEX IF NOT EXISTS idx_ongoing_username_status ON ongoing_attacks (username, status)').run();
+    await DB.prepare('CREATE INDEX IF NOT EXISTS idx_ongoing_method_status ON ongoing_attacks (method, status)').run();
+
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN plan_id INTEGER');
     await addColumn(DB, 'ALTER TABLE system_settings ADD COLUMN created_at TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN last_ip TEXT');
@@ -727,8 +732,12 @@ export async function listMethods(env) {
   if (!DB) return [];
 
   return await getCachedMethods(async () => {
-    const res = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_time, raw_access, star_access, private_access, created_at FROM methods ORDER BY name ASC').all();
-    return res.results || [];
+    try {
+      const res = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_time, raw_access, star_access, private_access, created_at FROM methods ORDER BY name ASC').all();
+      return res.results || [];
+    } catch (error) {
+      return [];
+    }
   });
 }
 
@@ -814,6 +823,57 @@ export async function countUsersByFlag(env, flag) {
   if (!['vip', 'holder', 'reseller', 'api', 'suspended'].includes(flag)) return 0;
   const res = await DB.prepare(`SELECT COUNT(*) AS c FROM users WHERE ${flag} = 1`).all();
   return Number(res?.results?.[0]?.c || 0);
+}
+
+export async function getUserStatistics(env) {
+  const DB = getDB(env);
+  if (!DB) return { total: 0, active: 0, suspended: 0, vip: 0, holder: 0, reseller: 0 };
+  try {
+    const res = await DB.prepare(`SELECT
+      COUNT(*) AS total,
+      COALESCE(SUM(CASE WHEN suspended = 0 OR suspended IS NULL THEN 1 ELSE 0 END), 0) AS active,
+      COALESCE(SUM(CASE WHEN suspended = 1 THEN 1 ELSE 0 END), 0) AS suspended,
+      COALESCE(SUM(CASE WHEN vip = 1 THEN 1 ELSE 0 END), 0) AS vip,
+      COALESCE(SUM(CASE WHEN holder = 1 THEN 1 ELSE 0 END), 0) AS holder,
+      COALESCE(SUM(CASE WHEN reseller = 1 THEN 1 ELSE 0 END), 0) AS reseller,
+      COALESCE(SUM(CASE WHEN admin = 1 THEN 1 ELSE 0 END), 0) AS admin
+      FROM users`).all();
+    const row = res?.results?.[0] || {};
+    return {
+      total: Number(row.total || 0),
+      active: Number(row.active || 0),
+      suspended: Number(row.suspended || 0),
+      vip: Number(row.vip || 0),
+      holder: Number(row.holder || 0),
+      reseller: Number(row.reseller || 0),
+      admin: Number(row.admin || 0)
+    };
+  } catch (error) {
+    console.error('Error getting user statistics:', error.message);
+    return { total: 0, active: 0, suspended: 0, vip: 0, holder: 0, reseller: 0 };
+  }
+}
+
+export async function getAdminStatistics(env) {
+  const DB = getDB(env);
+  if (!DB) return { users: {}, methods: 0, blacklist: 0, ongoing: 0 };
+  try {
+    const [users, methods, blacklist, ongoing] = await Promise.all([
+      getUserStatistics(env),
+      DB.prepare('SELECT COUNT(*) AS c FROM methods').all(),
+      DB.prepare('SELECT COUNT(*) AS c FROM blacklist').all(),
+      countOngoing(env)
+    ]);
+    return {
+      users,
+      methods: Number(methods?.results?.[0]?.c || 0),
+      blacklist: Number(blacklist?.results?.[0]?.c || 0),
+      ongoing: Number(ongoing || 0)
+    };
+  } catch (error) {
+    console.error('Error getting admin statistics:', error.message);
+    return { users: {}, methods: 0, blacklist: 0, ongoing: 0 };
+  }
 }
 
 export async function getDiscordLinkByUsername(env, username) {
@@ -1346,7 +1406,8 @@ export async function initializeDatabase(env) {
       { key: 'auto_cleanup_enabled', value: 'true', type: 'boolean', description: 'Enable automatic cleanup jobs' },
       { key: 'auto_cleanup_interval_ms', value: '300000', type: 'number', description: 'Automatic cleanup interval in milliseconds' },
       { key: 'default_user_plan', value: 'Default', type: 'string', description: 'Default plan assigned to new users' },
-      { key: 'api_version', value: '1.0.0', type: 'string', description: 'API version' }
+      { key: 'api_version', value: '1.0.0', type: 'string', description: 'API version' },
+      { key: 'uptime_started_at', value: new Date().toISOString(), type: 'string', description: 'Service uptime start timestamp' }
     ];
 
     for (const item of settings) {
@@ -1404,6 +1465,7 @@ export async function getMaintenanceMode(env) {
 
 export async function setMaintenanceMode(env, enabled) {
   await setSystemSetting(env, 'maintenance_mode', enabled ? 'true' : 'false', 'boolean', 'API maintenance mode - disables user attacks');
+  await setSystemSetting(env, 'uptime_started_at', new Date().toISOString(), 'string', 'Service uptime start timestamp');
 }
 
 export async function getAttacksDisabled(env) {
@@ -1546,13 +1608,14 @@ export async function cleanupOldLogs(env, retentionDays = 30) {
   const DB = getDB(env);
   if (!DB) return { error: 'No database connection', deleted: 0 };
   try {
-    const retentionMs = (retentionDays || 30) * 24 * 60 * 60 * 1000;
+    const retention = Math.max(1, Number(retentionDays) || 30);
+    const retentionMs = retention * 24 * 60 * 60 * 1000;
     const cutoffDate = new Date(Date.now() - retentionMs).toISOString();
     
     const result = await DB.prepare("DELETE FROM logs WHERE datetime(created_at) < datetime(?)").bind(cutoffDate).run();
     const deleted = Number(result?.meta?.changes || 0);
     
-    return { success: true, deleted, retention_days: retentionDays, cutoff_date: cutoffDate, timestamp: new Date().toISOString() };
+    return { success: true, deleted, retention_days: retention, cutoff_date: cutoffDate, timestamp: new Date().toISOString() };
   } catch (error) {
     console.error('Error cleaning up old logs:', error.message);
     return { error: error.message, deleted: 0 };

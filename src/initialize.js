@@ -1,19 +1,9 @@
 /**
  * Auto-initialization module for CAPI
- * Handles first-time setup of:
- * - D1 database tables and seed data
- * - KV namespace configuration
- * - R2 bucket setup
- * - System defaults and configurations
+ * Handles first-time setup of D1 database tables, seed data, and system defaults.
  */
 
 import * as Vault from './vault-db.js';
-
-const INIT_FLAGS = {
-  DB_INITIALIZED: 'capi:db:initialized',
-  KV_INITIALIZED: 'capi:kv:initialized',
-  SEED_DATA_LOADED: 'capi:seed:data:loaded'
-};
 
 /**
  * Initialize D1 database with all tables and seed data
@@ -73,131 +63,12 @@ async function initializeSystemSettings(env) {
   }
 }
 
-/**
- * Initialize KV namespace with default configuration
- * Creates cache structure for cross-worker state
- * @param {Object} CAPI_KV - Cloudflare KV namespace binding
- * @returns {Promise<Object>} Initialization result
- */
-export async function initializeKV(CAPI_KV) {
-  if (!CAPI_KV) {
-    return { success: false, error: 'KV namespace not configured' };
-  }
-
-  try {
-    const kvDefaults = {
-      'config:cache:ttl': JSON.stringify({ user: 15000, methods: 300000, settings: 600000 }),
-      'config:concurrency:limits': JSON.stringify({ global: 50, perUser: 3, outgoing: 100 }),
-      'metrics:initialized_at': new Date().toISOString(),
-      'cache:methods:list': JSON.stringify([]), // Pre-allocate methods cache
-      'cache:settings': JSON.stringify({})  // Pre-allocate settings cache
-    };
-
-    // Set defaults only if not already present (safe multi-init)
-    for (const [key, value] of Object.entries(kvDefaults)) {
-      try {
-        const existing = await CAPI_KV.get(key);
-        if (!existing) {
-          await CAPI_KV.put(key, value, { 
-            expirationTtl: 86400 * 365 // 1 year for config keys
-          });
-        }
-      } catch (e) {
-        console.warn(`Failed to initialize KV key ${key}:`, e.message);
-      }
-    }
-
-    return { 
-      success: true, 
-      message: 'KV namespace initialized',
-      namespace: 'CAPI_KV',
-      keys: Object.keys(kvDefaults)
-    };
-  } catch (error) {
-    console.error('KV initialization failed:', error);
-    return { 
-      success: false, 
-      error: error?.message || 'KV initialization failed'
-    };
-  }
-}
-
-/**
- * Initialize R2 bucket structure (creates metadata objects)
- * @param {Object} R2_BUCKET - R2 bucket binding
- * @param {string} bucketName - Name of R2 bucket
- * @returns {Promise<Object>} Initialization result
- */
-export async function initializeR2Bucket(R2_BUCKET, bucketName = 'capi-assets') {
-  if (!R2_BUCKET) {
-    return { success: false, error: 'R2 bucket not configured' };
-  }
-
-  try {
-    // Create marker objects for bucket organization
-    const markers = [
-      'metadata/.initialized',
-      'cache/.keep',
-      'uploads/.keep',
-      'backups/.keep'
-    ];
-
-    for (const path of markers) {
-      try {
-        const existing = await R2_BUCKET.get(path);
-        if (!existing) {
-          await R2_BUCKET.put(path, JSON.stringify({ 
-            created_at: new Date().toISOString(),
-            purpose: path.split('/')[0]
-          }), {
-            httpMetadata: {
-              contentType: 'application/json'
-            },
-            customMetadata: {
-              initialized: 'true'
-            }
-          });
-        }
-      } catch (e) {
-        console.warn(`Failed to create R2 marker ${path}:`, e.message);
-      }
-    }
-
-    return {
-      success: true,
-      message: 'R2 bucket initialized',
-      bucket: bucketName,
-      paths: markers
-    };
-  } catch (error) {
-    console.error('R2 initialization failed:', error);
-    return {
-      success: false,
-      error: error?.message || 'R2 initialization failed'
-    };
-  }
-}
-
-/**
- * Run full initialization sequence (database + KV + R2)
- * Call once at worker startup or when needed
- * Safe to call multiple times - all operations are idempotent
- * @param {Object} env - Cloudflare environment bindings
- * @returns {Promise<Object>} Combined initialization results
- */
+/** Run the D1 initialization sequence. */
 export async function initializeAll(env) {
-  const [database, kv, r2, r2_user] = await Promise.all([
-    initializeDatabase(env),
-    initializeKV(env.CAPI_KV),
-    initializeR2Bucket(env.capi_assets),
-    initializeR2Bucket(env.capi_user_assets, 'capi-user-assets')
-  ]);
+  const database = await initializeDatabase(env);
   const results = {
     timestamp: new Date().toISOString(),
-    database,
-    kv,
-    r2,
-    r2_user
+    database
   };
 
   const allSuccess = Object.values(results)
@@ -218,10 +89,7 @@ export async function initializeAll(env) {
 export async function getInitializationStatus(env) {
   const status = {
     timestamp: new Date().toISOString(),
-    database: !!env?.capi_db,
-    kv: !!env?.CAPI_KV,
-    r2_assets: !!env?.capi_assets,
-    r2_user_assets: !!env?.capi_user_assets
+    database: !!env?.capi_db
   };
 
   // Try to get a value from each service
@@ -236,17 +104,7 @@ export async function getInitializationStatus(env) {
     }
   }
 
-  if (status.kv) {
-    try {
-      const test = await env.CAPI_KV.get('_health_check');
-      status.kv_healthy = true; // KV.get() doesn't throw on missing keys
-    } catch (e) {
-      status.kv_healthy = false;
-      status.kv_error = e.message;
-    }
-  }
-
-  status.ready = status.database_healthy && status.kv_healthy;
+  status.ready = status.database_healthy === true;
 
   return status;
 }

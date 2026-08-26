@@ -19,17 +19,3 @@ BOT_API_KEY = ""
 binding = "capi_db"
 database_name = "capi_db"
 database_id = ""
-
-# R2 bucket bindings created in the current Cloudflare account.
-[[r2_buckets]]
-binding = "capi_assets"
-bucket_name = "capi-assets"
-
-[[r2_buckets]]
-binding = "capi_user_assets"
-bucket_name = "capi-user-assets"
-
-# KV namespace (create with `wrangler kv:namespace create CAPI_KV` and paste id below)
-[[kv_namespaces]]
-binding = "CAPI_KV"
-id = ""

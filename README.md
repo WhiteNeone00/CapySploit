@@ -90,7 +90,7 @@ npm run dev
 
 npm run deploy
 
-## Cloudflare services setup (optional but recommended)
+## Cloudflare D1 setup
 
 1. Create a D1 database for users/logs:
 
@@ -99,20 +99,6 @@ wrangler d1 create capi_db
 # then bind it by name in wrangler.toml (already present)
 ```
 
-2. Create an R2 bucket for user assets:
-
-```bash
-wrangler r2 bucket create capi-assets
-```
-
-3. Create a KV namespace for small key-values:
-
-```bash
-wrangler kv:namespace create CAPI_KV
-```
-
-4. Add or paste the created KV id into `wrangler.toml` under `[[kv_namespaces]]` `id`.
-
-After creating D1/R2/KV, run `npm run dev` to test locally with `wrangler dev`.
+After creating D1, run `npm run dev` to test locally with `wrangler dev`.
 >>>>>>> f3a8ea9 (Initial commit)
 this is educational purpose only

@@ -1,16 +1,54 @@
 // API route handlers for attack, plan, and status endpoints.
-import { jsonResponse, structuredResponse, parseQuery, routeNotFound, resolveServiceName, makePolishedError } from './response.js';
+import { jsonResponse, structuredResponse, parseQuery, routeNotFound, makePolishedError } from './response.js';
 import * as Vault from './vault-db.js';
 import { getPayloadMethods, getPayloadBlacklists } from '../payload.js';
 import { getUserLimits, isMethodPermittedForUser } from './policy.js';
 import { generateVerificationCode, buildDiscordRoleNames, userPlanRole } from './discord.js';
-import { formatSlotBar, generateAttackId, checkApiRateLimit, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot, lookupIpInfo } from './helpers.js';
+import { formatSlotBar, generateAttackId, checkApiRateLimit, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot, lookupIpInfo, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts } from './helpers.js';
 import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, LOOKUP_SERVICES, USER_LIMITS } from './config.js';
 import { isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget, normalizeBlacklistValue, isBlacklistedTarget, isBlacklistedByMetadata, validatePayloadLength } from './validator.js';
 
 let SERVICE_START = null;
 export function getSafeIpInfo(ipinfo) {
   return ipinfo && typeof ipinfo === 'object' ? ipinfo : {};
+}
+
+async function authenticateApiCredentials(qv, env) {
+  const username = String(qv.username || '').trim();
+  const providedPassword = (qv.password || qv.pass || '').toString();
+  if (!username || !providedPassword) {
+    return { ok: false, response: makePolishedError('missing credentials', 401, { hint: 'Provide username and password for this API route.' }) };
+  }
+
+  const authStatus = getFailedAuthAttempts(username);
+  if (authStatus.isLocked) {
+    return {
+      ok: false,
+      response: makePolishedError(
+        `Account temporarily locked after ${authStatus.limit} failed attempts. Wait ${authStatus.nextAttemptAvailable} seconds before trying again.`,
+        429,
+        { locked: true, attempts: authStatus.attempts, limit: authStatus.limit }
+      )
+    };
+  }
+
+  const user = await Vault.getUser(env, username, { fresh: true });
+  if (!user || String(user.password || '') !== providedPassword) {
+    const attempts = trackFailedAuthAttempt(username);
+    return {
+      ok: false,
+      response: makePolishedError('invalid credentials', 401, {
+        hint: attempts >= authStatus.limit
+          ? 'Account is now locked. Wait 15 minutes before trying again.'
+          : `${authStatus.limit - attempts} attempt${authStatus.limit - attempts !== 1 ? 's' : ''} remaining before account lock.`,
+        attempts,
+        limit: authStatus.limit
+      })
+    };
+  }
+
+  clearFailedAuthAttempts(username);
+  return { ok: true, user };
 }
 
 export async function resolveFastIpInfo(target, timeoutMs = 400) {
@@ -223,11 +261,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     // If not bot-authenticated, require username+password
     if (!botAuth) {
-      const providedPassword = (qv.password || qv.pass || '').toString();
-      if (!qv.username || !providedPassword) return makePolishedError('missing credentials', 401, { hint: 'Provide username and password for this API route.' });
-      const u = await Vault.getUser(env, qv.username, { fresh: true });
-      if (!u || String(u.password || '') !== providedPassword) return makePolishedError('invalid credentials', 401, { hint: 'Username or password is incorrect.' });
-      requestUser = u;
+      const auth = await authenticateApiCredentials(qv, env);
+      if (!auth.ok) return auth.response;
+      requestUser = auth.user;
     }
 
     // Apply rate limiting (respects bypass_anti_spam flag)
@@ -269,16 +305,15 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     }
     // Username/password flow
     if (qv.username) {
-      const providedPassword = (qv.password || qv.pass || '').toString();
-      if (!providedPassword) return { ok: false, reason: 'missing_credentials' };
-      const u = await Vault.getUser(env, qv.username, { fresh: true });
-      if (!u || String(u.password || '') !== providedPassword) return { ok: false, reason: 'invalid_credentials' };
-      return { ok: true, username: qv.username, user: u, bot: false };
+      const auth = await authenticateApiCredentials(qv, env);
+      if (!auth.ok) return { ok: false, reason: 'invalid_credentials', response: auth.response };
+      return { ok: true, username: qv.username, user: auth.user, bot: false };
     }
     return { ok: false, reason: 'missing_credentials' };
   }
 
   function authErrorResponse(auth) {
+    if (auth?.response) return auth.response;
     const invalid = auth?.reason === 'invalid_credentials';
     return makePolishedError(invalid ? 'invalid credentials' : 'missing credentials', 401, {
       hint: invalid
@@ -304,14 +339,14 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   if (endpoint === 'network_statistics') {
     // Batch all DB queries in parallel instead of sequential
     const [
-      users,
+      userStats,
       ongoing,
       attacksToday,
       verifiedDiscordUsers,
       maintenanceMode,
       attacksDisabled
     ] = await Promise.all([
-      Vault.listUsers(env),
+      Vault.getUserStatistics(env),
       Vault.countOngoing(env),
       Vault.countLogsToday(env),
       Vault.countVerifiedDiscordLinks(env),
@@ -319,12 +354,12 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       Vault.getAttacksDisabled(env)
     ]);
 
-    const total = users.length;
-    const activeUsers = users.filter((user) => !user.suspended).length;
-    const suspendedUsers = users.filter((user) => user.suspended).length;
-    const vipUsers = users.filter((user) => user.vip).length;
-    const holderUsers = users.filter((user) => user.holder).length;
-    const resellerUsers = users.filter((user) => user.reseller).length;
+    const total = userStats.total;
+    const activeUsers = userStats.active;
+    const suspendedUsers = userStats.suspended;
+    const vipUsers = userStats.vip;
+    const holderUsers = userStats.holder;
+    const resellerUsers = userStats.reseller;
     const healthStatus = suspendedUsers > 0 || ongoing > 0 ? 'degraded' : 'stable';
 
     return jsonResponse({
@@ -348,7 +383,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         health_status: healthStatus,
         maintenance_mode: maintenanceMode,
         src_name: APP_DEFAULTS.SRC_NAME,
-        src_uptime: 'up'
+        src_uptime: requestContext?.uptime || 'unknown'
       }
     }, 200, { service: serviceName, version: apiVersion });
   }
@@ -455,11 +490,12 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
   if (endpoint === 'methods') {
     // Public method catalog (no admin credentials required)
-    const dbMethods = await Vault.listMethods(env);
     const payloadMethods = getPayloadMethods();
+    const dbMethods = await Vault.listMethods(env);
+    const sourceMethods = dbMethods?.length ? dbMethods : payloadMethods;
     const methodMap = new Map((payloadMethods || []).map((item) => [String(item?.name || '').toLowerCase(), item]));
 
-    const methods = (dbMethods || [])
+    const methods = (sourceMethods || [])
       .map((method) => {
         const meta = methodMap.get(String(method?.name || '').toLowerCase()) || null;
         return {
@@ -492,7 +528,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (!link || !link.username) return jsonResponse({ error: true, message: 'Discord account not linked. Use /link to verify your account first; /plan is only available for linked users.', client: null }, 404, { service: serviceName, version: apiVersion });
     const user = await Vault.getUser(env, link.username);
     if (!user) return jsonResponse({ error: true, message: 'Linked user account no longer exists.' }, 500, { service: serviceName, version: apiVersion });
-    const userServiceName = await resolveServiceName(user, env, serviceName);
     const warningSummary = await Vault.getUserWarningSummary(env, user.username);
     const discordLink = await Vault.getDiscordLinkByUsername(env, user.username);
     return jsonResponse({
@@ -879,8 +914,11 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       }
     }
 
-    // Check if attacks are globally disabled
-    const attacksDisabled = await Vault.getAttacksDisabled(env);
+    // Fetch independent method and service state together.
+    const [attacksDisabled, methodsCatalog] = await Promise.all([
+      Vault.getAttacksDisabled(env),
+      Vault.listMethods(env)
+    ]);
     if (attacksDisabled) {
       return makePolishedError('Attacks are currently disabled', 503, { hint: 'All attacks have been disabled by administrators. Please try again later.' });
     }
@@ -889,7 +927,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const expects = ALLOWED_METHODS[record.method];
     const payloadMethods = getPayloadMethods();
     const payloadMethodMap = new Map((payloadMethods || []).map((item) => [String(item?.name || '').toLowerCase(), item]));
-    const methodsCatalog = await Vault.listMethods(env);
     const methodNames = (methodsCatalog || []).map(m => (m.name || '').toLowerCase());
     const catalogMethodMap = new Map((methodsCatalog || []).map((item) => [String(item?.name || '').toLowerCase(), item]));
 
@@ -1047,7 +1084,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     const attacks_remaining = Math.max(0, Number(user.max_daily_attacks || 0) - Number(todays || 0));
     const ongoing_now = ongoing;
-    const userServiceName = await resolveServiceName(user, env, serviceName);
     const attackEndTime = performance.now(); // End timing
     const executionTime = attackEndTime - attackStartTime; // Calculate execution time
     const attackId = generateAttackId(); // Generate unique attack ID

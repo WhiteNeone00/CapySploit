@@ -6,7 +6,7 @@
   "description": "CAPI - Cloudflare API scaffold modeled after the Royal SRC endpoint documentation.",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy && ./scripts/restart-bot.sh",
+    "deploy": "bash ./scripts/deploy.sh",
     "test": "node --test --test-concurrency=1",
     "bot": "node src/discord-bot.js"
   },

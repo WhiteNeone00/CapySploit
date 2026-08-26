@@ -196,18 +196,8 @@ export const PASSWORD_CONFIG = {
 // ==================== RATE LIMITING ====================
 export const RATE_LIMIT_CONFIG = {
   ENABLED: true,
-  WINDOW_SECONDS: 3,        // Minimum 3 seconds between requests per user
-  MAX_REQUESTS_PER_WINDOW: 1,
-  PROTECTED_ENDPOINTS: [
-    '/admin/add_user',
-    '/admin/edit_user',
-    '/admin/delete_user',
-    '/admin/view_user_plan',
-    '/admin/suspend_user',
-    '/api/attack',
-    '/api/stop',
-    '/api/verify'
-  ]
+  WINDOW_SECONDS: 1,        // Minimum 1 second between requests per user
+  PROTECTED_PREFIXES: ['/api/', '/admin/']
 };
 
 // ==================== FAILED AUTH RATE LIMITING ====================
@@ -264,23 +254,38 @@ export const TIMEOUT_CONFIG = {
 
 // ==================== ADMIN FIELD PROTECTION ====================
 export const ADMIN_PROTECTED_FIELDS = [
-  // These fields cannot be edited via API (only via direct DB or special endpoints)
-  'admin',           // Prevents privilege escalation
-  'password',        // Use dedicated change_password endpoint
-  'reseller',        // Role escalation protection
-  'vip',             // Plan escalation protection
-  'holder',          // Plan escalation protection
-  'suspended',       // Use dedicated suspend/unsuspend endpoints
-  'suspended_by',    // Audit trail protection
-  'suspend_reason'   // Audit trail protection
+  'admin'
 ];
 
 export const ADMIN_EDITABLE_FIELDS = [
+  'password',
+  'reseller',
+  'vip',
+  'holder',
+  'api',
+  'plan_id',
   'max_time',
   'cooldown',
   'max_concurrents',
   'max_daily_attacks',
+  'created_by',
+  'created_at',
+  'last_request_time',
+  'expiry_unix',
+  'bypass_slots',
+  'suspended',
+  'suspend_reason',
+  'suspended_by',
+  'expires_at',
+  'last_ip',
+  'whitelisted_ip',
+  'warning_count',
+  'warning_reset_at',
   'bypass_anti_spam',
+  'bypass_blacklist',
+  'raw_access',
+  'star_access',
+  'private_access',
   'power_saving'
 ];
 

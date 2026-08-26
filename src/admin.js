@@ -3,7 +3,7 @@ import { jsonResponse, structuredResponse, parseQuery, routeNotFound, resolveSer
 import * as Vault from './vault-db.js';
 import { initializeAll, getInitializationStatus } from './initialize.js';
 import { getPayloadMethods } from '../payload.js';
-import { sanitizeUserForResponse, sanitizeUsersForResponse, paginate, validatePaginationParams, checkApiRateLimit, applyGlobalRateLimit, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts } from './helpers.js';
+import { sanitizeUserForResponse, sanitizeUsersForResponse, paginate, validatePaginationParams, applyGlobalRateLimit, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts } from './helpers.js';
 import { PASSWORD_CONFIG, ADMIN_PROTECTED_FIELDS, ADMIN_EDITABLE_FIELDS, APP_DEFAULTS, USER_LIMITS } from './config.js';
 
 // ==================== UTILITY FUNCTIONS ====================
@@ -221,8 +221,8 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
   const adminUsername = String(q.username || '').trim();
 
   // Handle initialization endpoints (no auth required, called once at setup)
-  if (endpoint === 'init') {
-    // ENDPOINT: /admin/init - Initialize all systems (database, KV, R2)
+  if (endpoint === 'init' && parts[1] !== 'status') {
+    // ENDPOINT: /admin/init - Initialize the D1 database
     // Usage: Called once after deployment or when systems need reset
     // Returns: Initialization status for all bindings
     const initResult = await initializeAll(env);
@@ -234,10 +234,10 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     }, initResult.all_success ? 200 : 207);
   }
 
-  if (endpoint === 'init/status') {
+  if (endpoint === 'init' && parts[1] === 'status') {
     // ENDPOINT: /admin/init/status - Check initialization status without auth
     // Usage: Called to verify system readiness
-    // Returns: Health check for database, KV, R2
+    // Returns: D1 database health check
     const status = await getInitializationStatus(env);
     return jsonResponse({
       error: false,
@@ -715,30 +715,21 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
 
   if (endpoint === 'stats') {
     // Admin statistics endpoint
-    const [users, methods, blacklist, ongoing] = await Promise.all([
-      Vault.listUsers(env),
-      Vault.listMethods(env),
-      Vault.listBlacklist(env),
-      Vault.listOngoing(env)
-    ]);
-    
-    const suspendedCount = (users || []).filter(u => u.suspended).length;
-    const adminCount = (users || []).filter(u => u.admin).length;
-    const resellerCount = (users || []).filter(u => u.reseller).length;
-    const vipCount = (users || []).filter(u => u.vip).length;
+    const statistics = await Vault.getAdminStatistics(env);
+    const users = statistics.users || {};
     
     return jsonResponse({
       error: false,
       message: 'Admin statistics loaded',
       stats: {
-        total_users: users?.length || 0,
-        suspended_users: suspendedCount,
-        admin_users: adminCount,
-        reseller_users: resellerCount,
-        vip_users: vipCount,
-        total_methods: methods?.length || 0,
-        blacklist_entries: blacklist?.length || 0,
-        ongoing_attacks: ongoing?.length || 0,
+        total_users: users.total || 0,
+        suspended_users: users.suspended || 0,
+        admin_users: users.admin || 0,
+        reseller_users: users.reseller || 0,
+        vip_users: users.vip || 0,
+        total_methods: statistics.methods,
+        blacklist_entries: statistics.blacklist,
+        ongoing_attacks: statistics.ongoing,
         timestamp: new Date().toISOString()
       }
     });
