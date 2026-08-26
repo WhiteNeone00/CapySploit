@@ -595,6 +595,13 @@ export async function updateUserLastRequestTime(env, username, ip = null) {
   invalidateSettingsCache();
 }
 
+export async function updateUserLastIp(env, username, ip) {
+  const DB = getDB(env);
+  if (!DB || !username || !ip) return;
+  await DB.prepare('UPDATE users SET last_ip = ? WHERE username = ?').bind(String(ip), username).run();
+  invalidateUserCache(username);
+}
+
 export async function getUserLastRequestTime(env, username) {
   const DB = getDB(env);
   if (!DB) return null;

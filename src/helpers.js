@@ -478,6 +478,15 @@ export function sanitizeUsersForResponse(users) {
   return (users || []).map(u => sanitizeUserForResponse(u));
 }
 
+export function getClientIp(request) {
+  return request?.headers?.get?.('cf-connecting-ip') || request?.headers?.get?.('x-forwarded-for') || 'unknown';
+}
+
+export function isUserIpAllowed(user, clientIp) {
+  const whitelist = String(user?.whitelisted_ip || '').trim();
+  return !whitelist || whitelist === String(clientIp || '').trim();
+}
+
 /**
  * Validate pagination parameters
  * @param {number} limit - Items per page

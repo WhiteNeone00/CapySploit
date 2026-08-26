@@ -4,7 +4,7 @@ import * as Vault from './vault-db.js';
 import { getPayloadMethods, getPayloadBlacklists } from '../payload.js';
 import { getUserLimits, isMethodPermittedForUser } from './policy.js';
 import { generateVerificationCode, buildDiscordRoleNames, userPlanRole } from './discord.js';
-import { formatSlotBar, generateAttackId, checkApiRateLimit, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot, lookupIpInfo, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts } from './helpers.js';
+import { formatSlotBar, generateAttackId, checkApiRateLimit, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot, lookupIpInfo, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts, getClientIp, isUserIpAllowed } from './helpers.js';
 import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, LOOKUP_SERVICES, USER_LIMITS } from './config.js';
 import { isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget, normalizeBlacklistValue, isBlacklistedTarget, isBlacklistedByMetadata, validatePayloadLength } from './validator.js';
 
@@ -13,7 +13,7 @@ export function getSafeIpInfo(ipinfo) {
   return ipinfo && typeof ipinfo === 'object' ? ipinfo : {};
 }
 
-async function authenticateApiCredentials(qv, env) {
+async function authenticateApiCredentials(qv, env, request) {
   const username = String(qv.username || '').trim();
   const providedPassword = (qv.password || qv.pass || '').toString();
   if (!username || !providedPassword) {
@@ -48,6 +48,11 @@ async function authenticateApiCredentials(qv, env) {
   }
 
   clearFailedAuthAttempts(username);
+  const clientIp = getClientIp(request);
+  if (!isUserIpAllowed(user, clientIp)) {
+    return { ok: false, response: makePolishedError('access denied from this IP address', 403, { ip: clientIp, whitelisted_ip: user.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' }) };
+  }
+  await Vault.updateUserLastIp(env, username, clientIp);
   return { ok: true, user };
 }
 
@@ -261,7 +266,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     // If not bot-authenticated, require username+password
     if (!botAuth) {
-      const auth = await authenticateApiCredentials(qv, env);
+      const auth = await authenticateApiCredentials(qv, env, request);
       if (!auth.ok) return auth.response;
       requestUser = auth.user;
     }
@@ -305,7 +310,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     }
     // Username/password flow
     if (qv.username) {
-      const auth = await authenticateApiCredentials(qv, env);
+      const auth = await authenticateApiCredentials(qv, env, request);
       if (!auth.ok) return { ok: false, reason: 'invalid_credentials', response: auth.response };
       return { ok: true, username: qv.username, user: auth.user, bot: false };
     }
@@ -574,6 +579,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const user = await Vault.getUser(env, username);
     if (!user) return jsonResponse({ error: true, message: 'user does not exist', client, code: null }, 404, { service: serviceName, version: apiVersion });
     if (!(await Vault.verifyUserPassword(env, user, password))) return jsonResponse({ error: true, message: 'wrong password', client, code: null }, 401, { service: serviceName, version: apiVersion });
+    const clientIp = getClientIp(request);
+    if (!isUserIpAllowed(user, clientIp)) return makePolishedError('access denied from this IP address', 403, { ip: clientIp, whitelisted_ip: user.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' });
+    await Vault.updateUserLastIp(env, username, clientIp);
     if (user.suspended) return jsonResponse({ error: true, message: 'account suspended', client, code: null }, 403, { service: serviceName, version: apiVersion });
     if (!(user.api ?? user.api_access)) return jsonResponse({ error: true, message: 'api access disabled', client, code: null }, 403, { service: serviceName, version: apiVersion });
 
@@ -724,8 +732,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         suspended: Boolean(u.suspended),
         created_by: u.created_by || null,
         creation_date: createdAt,
-        expiry_unix: Number(u.expiry_unix || 0),
-        formatted_expiry: expiryDate,
+        expiry_date: expiryDate,
         service_name: serviceName,
         plan_type: planType,
         rank: rank,
@@ -758,6 +765,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       if (providedPassword) {
         const u = await Vault.getUser(env, username);
         if (!u || !(await Vault.verifyUserPassword(env, u, providedPassword))) return makePolishedError('invalid credentials', 401, { hint: 'Username or password is incorrect.' });
+        const clientIp = getClientIp(request);
+        if (!isUserIpAllowed(u, clientIp)) return makePolishedError('access denied from this IP address', 403, { ip: clientIp, whitelisted_ip: u.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' });
+        await Vault.updateUserLastIp(env, username, clientIp);
       } else {
         // No auth provided — require username/password to view a user's ongoing attacks
         return makePolishedError('missing credentials', 401, { hint: 'Provide username and password in the request.' });
@@ -887,6 +897,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       if (!providedPassword) return makePolishedError('missing credentials', 401, { hint: 'Provide username and password in the request.' });
       // Note: Vault stores the password in the `password` field. Adjust if passwords are hashed.
       if (String(user.password || '') !== providedPassword) return makePolishedError('invalid credentials', 401, { hint: 'Username or password is incorrect.' });
+      const clientIp = getClientIp(request);
+      if (!isUserIpAllowed(user, clientIp)) return makePolishedError('access denied from this IP address', 403, { ip: clientIp, whitelisted_ip: user.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' });
+      await Vault.updateUserLastIp(env, user.username, clientIp);
     }
 
     if (user.suspended || user.suspended === true) {

@@ -3,7 +3,7 @@ import { jsonResponse, structuredResponse, parseQuery, routeNotFound, resolveSer
 import * as Vault from './vault-db.js';
 import { initializeAll, getInitializationStatus } from './initialize.js';
 import { getPayloadMethods } from '../payload.js';
-import { sanitizeUserForResponse, sanitizeUsersForResponse, paginate, validatePaginationParams, applyGlobalRateLimit, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts } from './helpers.js';
+import { sanitizeUserForResponse, sanitizeUsersForResponse, paginate, validatePaginationParams, applyGlobalRateLimit, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts, isUserIpAllowed } from './helpers.js';
 import { PASSWORD_CONFIG, ADMIN_PROTECTED_FIELDS, ADMIN_EDITABLE_FIELDS, APP_DEFAULTS, USER_LIMITS } from './config.js';
 
 // ==================== UTILITY FUNCTIONS ====================
@@ -212,6 +212,11 @@ async function requireAdminCredentials(q, env, requestContext = {}) {
 
   // Clear failed auth attempts on successful login
   clearFailedAuthAttempts(username);
+  const clientIp = requestContext.sourceIp || 'unknown';
+  if (!isUserIpAllowed(admin, clientIp)) {
+    return { ok: false, response: makePolishedError('access denied from this IP address', 403, { ip: clientIp, whitelisted_ip: admin.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' }) };
+  }
+  await Vault.updateUserLastIp(env, username, clientIp);
   return { ok: true, admin };
 }
 
@@ -505,7 +510,6 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
         created_by: u.created_by || null,
         created_at: createdAt,
         expiry_date: expiryDate,
-        service_name: serviceName,
         plan_type: planType,
         rank: rank,
         discord_linked: discordLink ? discordLink.discord_user_id : null,
