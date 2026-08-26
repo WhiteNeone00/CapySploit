@@ -1,7 +1,7 @@
 // Shared utility functions used across multiple modules
 // Extract duplicated and common functions here for DRY principle
 import { getPayloadMethods } from '../payload.js';
-import { PAGINATION_CONFIG, API_CONFIG, RATE_LIMIT_CONFIG, FAILED_AUTH_CONFIG, TIMEOUT_CONFIG, CACHE_CONFIG, CONCURRENCY_CONFIG, DEFAULT_PLANS, DEFAULT_METHODS, LOOKUP_SERVICES, APP_DEFAULTS } from './config.js';
+import { PAGINATION_CONFIG, FAILED_AUTH_CONFIG, TIMEOUT_CONFIG, CACHE_CONFIG, CONCURRENCY_CONFIG, DEFAULT_PLANS, DEFAULT_METHODS, LOOKUP_SERVICES, APP_DEFAULTS } from './config.js';
 
 // ==================== DB-FIRST CONFIGURATION PATTERN ====================
 // All settings check database (system_settings) first, then fall back to config.js

@@ -4,8 +4,8 @@ import * as Vault from './vault-db.js';
 import { getPayloadMethods, getPayloadBlacklists } from '../payload.js';
 import { getUserLimits, isMethodPermittedForUser } from './policy.js';
 import { generateVerificationCode, buildDiscordRoleNames, userPlanRole } from './discord.js';
-import { formatSlotBar, generateAttackId, checkApiRateLimit, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot, lookupIpInfo, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts, getClientIp, isUserIpAllowed } from './helpers.js';
-import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, LOOKUP_SERVICES, USER_LIMITS } from './config.js';
+import { formatSlotBar, generateAttackId, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot, lookupIpInfo, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts, getClientIp, isUserIpAllowed } from './helpers.js';
+import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, USER_LIMITS } from './config.js';
 import { isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget, normalizeBlacklistValue, isBlacklistedTarget, isBlacklistedByMetadata, validatePayloadLength } from './validator.js';
 
 let SERVICE_START = null;
@@ -13,11 +13,28 @@ export function getSafeIpInfo(ipinfo) {
   return ipinfo && typeof ipinfo === 'object' ? ipinfo : {};
 }
 
+function isSuspendedUser(user) {
+  return user?.suspended === true || user?.suspended === 1 || user?.suspended === '1' || user?.suspended === 'true';
+}
+
+function suspendedAccountResponse() {
+  return makePolishedError('account suspended', 403, {
+    suspended: true,
+    hint: 'This account is suspended. Contact an administrator to restore access.'
+  });
+}
+
 async function authenticateApiCredentials(qv, env, request) {
   const username = String(qv.username || '').trim();
   const providedPassword = (qv.password || qv.pass || '').toString();
   if (!username || !providedPassword) {
     return { ok: false, response: makePolishedError('missing credentials', 401, { hint: 'Provide username and password for this API route.' }) };
+  }
+
+  const user = await Vault.getUser(env, username, { fresh: true });
+  if (isSuspendedUser(user)) {
+    clearFailedAuthAttempts(username);
+    return { ok: false, response: suspendedAccountResponse() };
   }
 
   const authStatus = getFailedAuthAttempts(username);
@@ -32,7 +49,6 @@ async function authenticateApiCredentials(qv, env, request) {
     };
   }
 
-  const user = await Vault.getUser(env, username, { fresh: true });
   if (!user || String(user.password || '') !== providedPassword) {
     const attempts = trackFailedAuthAttempt(username);
     return {
@@ -287,7 +303,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       }
     }
 
-    if (requestUser && requestUser.suspended) return makePolishedError('account suspended', 403, { suspended: true, hint: 'This account is suspended. Contact an administrator to restore access.' });
+    if (isSuspendedUser(requestUser)) return suspendedAccountResponse();
   }
 
 
@@ -304,6 +320,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
           const user = requestContext?.user?.username === link.username
             ? requestContext.user
             : await Vault.getUser(env, link.username);
+          if (isSuspendedUser(user)) return { ok: false, response: suspendedAccountResponse(), reason: 'suspended' };
           return { ok: true, username: link.username, user, bot: true };
         }
       }
@@ -312,6 +329,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (qv.username) {
       const auth = await authenticateApiCredentials(qv, env, request);
       if (!auth.ok) return { ok: false, reason: 'invalid_credentials', response: auth.response };
+      if (isSuspendedUser(auth.user)) return { ok: false, reason: 'suspended', response: suspendedAccountResponse() };
       return { ok: true, username: qv.username, user: auth.user, bot: false };
     }
     return { ok: false, reason: 'missing_credentials' };
@@ -691,19 +709,20 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       );
     }
     
-    const [discordLink, attacksToday] = await Promise.all([
+    const [discordLink, attacksToday, planSettings] = await Promise.all([
       Vault.getVerifiedDiscordLinkByUsername(env, u.username),
-      Vault.countUserDailyAttacks(env, u.username)
+      Vault.countUserDailyAttacks(env, u.username),
+      Vault.resolveUserPlanSettings(env, u)
     ]);
     const attacksRemaining = Math.max(0, Number(u.max_daily_attacks || 0) - Number(attacksToday || 0));
     
     // Determine plan type and rank
-    let planType = 'Free';
+    const planType = planSettings?.plan_name || 'Default';
     let rank = 'User';
-    if (u.admin) { planType = 'Admin'; rank = 'Administrator'; }
-    else if (u.reseller) { planType = 'Reseller'; rank = 'Reseller'; }
-    else if (u.holder) { planType = 'Holder'; rank = 'Holder'; }
-    else if (u.vip) { planType = 'VIP'; rank = 'VIP'; }
+    if (u.admin) rank = 'Admin';
+    else if (u.reseller) rank = 'Reseller';
+    else if (u.holder) rank = 'Holder';
+    else if (u.vip) rank = 'VIP';
     
     // Format dates
     const createdAt = u.created_at ? new Date(u.created_at).toISOString().replace('T', ' ').substring(0, 19) : null;
@@ -720,6 +739,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         reseller: Boolean(u.reseller),
         owner: Boolean(u.owner || false),
         api: Boolean(u.api ?? u.api_access),
+        plan_id: planSettings?.plan_id ?? u.plan_id ?? null,
         max_time: Number(u.max_time || 60),
         cooldown: Number(u.cooldown || 10),
         max_concurrents: Number(u.max_concurrents || 1),
@@ -729,6 +749,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         bypass_power: !isPowerSavingEnabled(u.power_saving),
         bypass_anti_spam: Boolean(u.bypass_anti_spam || false),
         bypass_blacklist: Boolean(u.bypass_blacklist || false),
+        raw_access: Boolean(planSettings?.raw_access ?? u.raw_access),
+        star_access: Boolean(planSettings?.star_access ?? u.star_access),
+        botnet_access: Boolean(planSettings?.botnet_access ?? u.botnet_access),
+        private_access: Boolean(planSettings?.private_access ?? u.private_access),
         suspended: Boolean(u.suspended),
         created_by: u.created_by || null,
         creation_date: createdAt,

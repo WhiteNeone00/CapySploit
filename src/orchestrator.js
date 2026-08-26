@@ -1,7 +1,7 @@
 // Main request router for API, admin, and lookup endpoints.
 import { jsonResponse, routeNotFound } from './response.js';
 import * as Vault from './vault-db.js';
-import { initializeAll, getInitializationStatus } from './initialize.js';
+import { initializeAll } from './initialize.js';
 import { apiHandler } from './api.js';
 import { adminHandler } from './admin.js';
 import { lookupHandler } from './lookup.js';
@@ -157,30 +157,30 @@ export async function handleRequest(request, env) {
       }, isMaintenance ? 503 : 200, { service: serviceName, version: apiVersion, requestId });
     }
 
-    // Bootstrap once per worker, then repair the plans table if it was removed externally.
+    // Bootstrap only when the core schema is missing; avoid full seeding on every cold worker.
     if (!dbInitialized) {
-      initializationPromise ||= initializeAll(env);
-      const currentInitialization = initializationPromise;
+      let schemaReady = false;
       try {
-        await currentInitialization;
-        dbInitialized = true;
-      } finally {
-        if (initializationPromise === currentInitialization) initializationPromise = null;
+        const schema = await env?.capi_db?.prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('users', 'plans', 'methods')"
+        ).all();
+        schemaReady = (schema?.results || []).length === 3;
+      } catch (error) {
+        schemaReady = false;
       }
+
+      if (!schemaReady) {
+        initializationPromise ||= initializeAll(env);
+        const currentInitialization = initializationPromise;
+        try {
+          await currentInitialization;
+        } finally {
+          if (initializationPromise === currentInitialization) initializationPromise = null;
+        }
+      }
+      dbInitialized = true;
       logger.info('database_initialized');
     }
-
-    if (env?.capi_db) {
-      try {
-        const plansTable = await env.capi_db.prepare('SELECT name FROM plans LIMIT 1').all();
-        if (!plansTable) throw new Error('plans table check failed');
-      } catch (error) {
-        await Vault.ensureTables(env);
-        await Vault.seedPlans(env);
-      }
-    }
-
-    // Queue processing disabled by user request; direct execution is preferred.
 
     // Periodically cleanup cache stores
     const now = Date.now();
