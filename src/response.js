@@ -1,9 +1,8 @@
 // Shared response helpers used by the API, admin, and lookup routes.
 import * as Vault from './vault-db.js';
-import { DEFAULT_TIPS, DEFAULT_ADS, APP_DEFAULTS } from './config.js';
+import { DEFAULT_ADS, APP_DEFAULTS } from './config.js';
 
 // Initialize cursor with random offset to avoid all workers using same index
-let tipCursor = Math.floor(Math.random() * 1000);
 let adCursor = Math.floor(Math.random() * 1000);
 
 /**
@@ -21,14 +20,11 @@ function getRotatingText(list, cursorValue) {
 
 function buildResponseMeta(payload = {}, options = {}) {
   // Use atomic increments and clamp to valid range to prevent race conditions
-  const tipIndex = tipCursor++;
   const adIndex = adCursor++;
   
-  const tip = payload?.tips || payload?.tip || options?.tips || getRotatingText(DEFAULT_TIPS, tipIndex);
   const ad = payload?.ads || payload?.advert || options?.ads || getRotatingText(DEFAULT_ADS, adIndex);
   
   return {
-    tips: tip,
     ads: ad
   };
 }
@@ -221,7 +217,6 @@ export function jsonResponse(payload, status = 200, options = {}) {
   responsePayload.service = options.service || payloadWithoutFooter.service || payloadWithoutFooter.service_name || APP_DEFAULTS.DEFAULT_SERVICE_NAME;
   // Use options.version (from DB via orchestrator) or fallback to payload/config  
   responsePayload.version = options.version || payloadWithoutFooter.version || '1.0.0';
-  responsePayload.tips = payloadWithoutFooter.tips || options.tips || meta.tips;
   responsePayload.ads = payloadWithoutFooter.ads || options.ads || meta.ads;
 
   const body = JSON.stringify(responsePayload, null, 2);

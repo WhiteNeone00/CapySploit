@@ -9,6 +9,7 @@ import { DATABASE_CONFIG, HTTP_CODES, CACHE_CONFIG, APP_DEFAULTS, RATE_LIMIT_CON
 import { generateRequestId, StructuredLogger } from './logger.js';
 import { validateRequestSize, sanitizeErrorMessage } from './validator.js';
 import { getCachedSystemSetting, cleanupCacheStores, checkApiRateLimit } from './helpers.js';
+import { sendAuditWebhook } from './webhook.js';
 
 const MAX_REQUEST_SIZE = 1048576; // 1MB limit
 let dbInitialized = false;
@@ -59,7 +60,7 @@ function queueCleanupTask(task) {
   processCleanupQueue().catch(e => console.error('Cleanup queue error:', e));
 }
 
-export async function handleRequest(request, env) {
+export async function handleRequest(request, env, ctx = null) {
   // Generate unique request ID for tracking
   const requestId = generateRequestId();
   const url = new URL(request.url);
@@ -103,8 +104,6 @@ export async function handleRequest(request, env) {
         return jsonResponse({
           error: true,
           message: `Rate limited. Please wait ${rateLimitCheck.secondsUntilAvailable} second${rateLimitCheck.secondsUntilAvailable !== 1 ? 's' : ''} before trying again.`,
-          status: 'rate_limited',
-          retry_after: rateLimitCheck.secondsUntilAvailable
         }, 429, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME, version: env.API_VERSION || '1.0.0', requestId });
       }
     }
@@ -206,18 +205,24 @@ export async function handleRequest(request, env) {
       uptime
     };
 
+    const auditResponse = (response) => {
+      const auditTask = sendAuditWebhook(env, request, path, response.status, requestId);
+      if (ctx?.waitUntil) ctx.waitUntil(auditTask);
+      return response;
+    };
+
     // Route requests to appropriate handler with context
     if (parts[0] === 'api') {
       logger.info('route_api', { endpoint: parts[1] });
-      return apiHandler(parts.slice(1), request, env, requestId, logger, requestContext);
+      return auditResponse(await apiHandler(parts.slice(1), request, env, requestId, logger, requestContext));
     }
     if (parts[0] === 'admin') {
       logger.auth('admin_access_attempt', username, true);
-      return adminHandler(parts.slice(1), request, env, requestId, logger, requestContext);
+      return auditResponse(await adminHandler(parts.slice(1), request, env, requestId, logger, requestContext));
     }
     if (parts[0] === 'lookup') {
       logger.info('route_lookup', { type: parts[1] });
-      return lookupHandler(parts.slice(1), request, env, requestId, logger, requestContext);
+      return auditResponse(await lookupHandler(parts.slice(1), request, env, requestId, logger, requestContext));
     }
     if (parts[0] === 'discord' || parts[0] === 'interactions') {
       const { handleDiscordInteraction, registerDiscordCommand } = await import('./discord-interactions.js');

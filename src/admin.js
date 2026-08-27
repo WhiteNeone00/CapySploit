@@ -504,7 +504,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     
     // Format dates
     const createdAt = u.created_at ? new Date(u.created_at).toISOString() : new Date().toISOString();
-    const expiryDate = u.expiry_unix && u.expiry_unix > 0 ? new Date(u.expiry_unix * 1000).toISOString() : null;
+    const expiryDate = u.expiry_unix && u.expiry_unix > 0 ? new Date(u.expiry_unix * 1000).toISOString() : 'Lifetime';
     const discordLinkTime = discordLink?.verified_at ? new Date(discordLink.verified_at).toISOString() : null;
     const lastAttackIso = lastAttackTime ? new Date(lastAttackTime).toISOString() : null;
     

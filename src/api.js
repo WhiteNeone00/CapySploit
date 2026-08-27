@@ -726,7 +726,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     
     // Format dates
     const createdAt = u.created_at ? new Date(u.created_at).toISOString().replace('T', ' ').substring(0, 19) : null;
-    const expiryDate = u.expiry_unix && u.expiry_unix > 0 ? new Date(u.expiry_unix * 1000).toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\//g, '-') : null;
+    const expiryDate = u.expiry_unix && u.expiry_unix > 0 ? new Date(u.expiry_unix * 1000).toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\//g, '-') : 'Lifetime';
     
     return jsonResponse({
       error: false,
@@ -757,7 +757,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         created_by: u.created_by || null,
         creation_date: createdAt,
         expiry_date: expiryDate,
-        service_name: serviceName,
         plan_type: planType,
         rank: rank,
         discord_linked: discordLink ? discordLink.discord_user_id : null
@@ -1128,7 +1127,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     
     const responseBody = {
       error: false,
-      message: 'attack accepted',
+      message: 'Attack request accepted and launched successfully.',
       data: {
         attack_id: attackId,
         target: record.target,

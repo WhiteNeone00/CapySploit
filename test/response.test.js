@@ -454,21 +454,20 @@ test('method metadata keeps the current field names and max_time semantics', asy
   assert.ok(!('vip_user' in method));
 });
 
-test('keeps tips and ads at the bottom and uses a custom service name', async () => {
+test('keeps ads at the bottom and disables tips', async () => {
   const response = jsonResponse({ error: false, online_users_count: 1 }, 200, { service: 'ResellerX' });
   const body = await response.json();
 
   assert.equal(body.service, 'ResellerX');
-  assert.deepEqual(Object.keys(body).slice(-2), ['tips', 'ads']);
-  assert.ok(typeof body.tips === 'string' && body.tips.length > 0);
+  assert.equal(Object.keys(body).at(-1), 'ads');
+  assert.equal(body.tips, undefined);
   assert.ok(typeof body.ads === 'string' && body.ads.length > 0);
 });
 
-test('rotates tips and ads over repeated responses', async () => {
+test('rotates ads over repeated responses', async () => {
   const first = await jsonResponse({ error: false }).json();
   const second = await jsonResponse({ error: false }).json();
 
-  assert.notEqual(first.tips, second.tips);
   assert.notEqual(first.ads, second.ads);
 });
 
