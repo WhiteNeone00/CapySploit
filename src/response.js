@@ -1,6 +1,5 @@
 // Shared response helpers used by the API, admin, and lookup routes.
-import * as Vault from './vault-db.js';
-import { DEFAULT_ADS, APP_DEFAULTS } from './config.js';
+import { DEFAULT_ADS, APP_DEFAULTS, resolveApiHint, resolveApiMessage } from './config.js';
 
 // Initialize cursor with random offset to avoid all workers using same index
 let adCursor = Math.floor(Math.random() * 1000);
@@ -198,11 +197,16 @@ export function checkJavaScriptSyntax(source, fileName = 'inline.js') {
 }
 
 export function makePolishedError(message, status = 400, extra = {}) {
+  const messageKey = extra.messageKey || extra.key || null;
+  const hintKey = extra.hintKey || null;
+  const resolvedMessage = resolveApiMessage(messageKey, message || 'request failed');
+  const resolvedHint = resolveApiHint(hintKey || messageKey, extra.hint || 'Review your request and try again.');
+
   return jsonResponse({
     error: true,
-    message,
-    hint: extra.hint || 'Review your request and try again.',
-    ...extra
+    ...extra,
+    message: resolvedMessage,
+    hint: resolvedHint
   }, status);
 }
 

@@ -5,11 +5,10 @@ import { initializeAll } from './initialize.js';
 import { apiHandler } from './api.js';
 import { adminHandler } from './admin.js';
 import { lookupHandler } from './lookup.js';
-import { DATABASE_CONFIG, HTTP_CODES, CACHE_CONFIG, APP_DEFAULTS, RATE_LIMIT_CONFIG } from './config.js';
+import { DATABASE_CONFIG, HTTP_CODES, CACHE_CONFIG, APP_DEFAULTS, RATE_LIMIT_CONFIG, sendDiscordWebhookForEvent } from './config.js';
 import { generateRequestId, StructuredLogger } from './logger.js';
 import { validateRequestSize, sanitizeErrorMessage } from './validator.js';
 import { getCachedSystemSetting, cleanupCacheStores, checkApiRateLimit } from './helpers.js';
-import { sendAuditWebhook } from './webhook.js';
 
 const MAX_REQUEST_SIZE = 1048576; // 1MB limit
 let dbInitialized = false;
@@ -63,6 +62,7 @@ function queueCleanupTask(task) {
 export async function handleRequest(request, env, ctx = null) {
   // Generate unique request ID for tracking
   const requestId = generateRequestId();
+  const requestStartedAt = Date.now();
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/+/g, '').replace(/\/+$/g, '');
   const logger = new StructuredLogger(requestId, path, request.method);
@@ -202,36 +202,76 @@ export async function handleRequest(request, env, ctx = null) {
       rateLimitTarget: username ? `route:${username}` : `route:${sourceIp}`,
       serviceName,
       apiVersion,
+      maintenanceMode: isMaintenance,
       uptime
     };
 
-    const auditResponse = (response) => {
-      const auditTask = sendAuditWebhook(env, request, path, response.status, requestId);
-      if (ctx?.waitUntil) ctx.waitUntil(auditTask);
+    const dispatchRequestLog = async (response, route) => {
+      const queryUsername = username || null;
+      let errorMessage = null;
+      if (response?.status >= 400 && response?.clone) {
+        try {
+          const body = await response.clone().json();
+          errorMessage = body?.message || body?.error || null;
+        } catch (_) {
+          errorMessage = null;
+        }
+      }
+      const requestPayload = {
+        route: `/${path}`,
+        method: request.method,
+        username: queryUsername || 'anonymous',
+        source_ip: sourceIp,
+        status: response?.status || 500,
+        duration_ms: Date.now() - requestStartedAt,
+        request_id: requestId,
+        auth_attempted: Boolean(query.get('password') || query.get('pass') || request.headers.get('authorization')),
+        route_group: route,
+        ...(errorMessage ? { error: errorMessage } : {})
+      };
+      const delivery = sendDiscordWebhookForEvent('request', requestPayload, {
+        mode: 'all',
+        title: 'REQUEST RECEIVED',
+        description: `${request.method} /${path} completed with HTTP ${requestPayload.status}`,
+        footer: 'CAPI Request Monitor',
+        fields: [
+          { name: 'Route', value: requestPayload.route, inline: false },
+          { name: 'Method', value: requestPayload.method, inline: true },
+          { name: 'Username', value: requestPayload.username, inline: true },
+          { name: 'Source IP', value: requestPayload.source_ip, inline: true },
+          { name: 'Status', value: String(requestPayload.status), inline: true },
+          { name: 'Duration', value: `${requestPayload.duration_ms} ms`, inline: true },
+          { name: 'Auth', value: requestPayload.auth_attempted ? 'attempted (credentials redacted)' : 'not supplied', inline: false },
+          ...(errorMessage ? [{ name: 'Result', value: String(errorMessage).slice(0, 1024), inline: false }] : []),
+          { name: 'Request ID', value: requestPayload.request_id, inline: false }
+        ]
+      });
+      if (ctx?.waitUntil) ctx.waitUntil(delivery.catch((error) => console.error('request webhook failed:', error?.message || error)));
+      else void delivery.catch((error) => console.error('request webhook failed:', error?.message || error));
       return response;
     };
 
     // Route requests to appropriate handler with context
     if (parts[0] === 'api') {
       logger.info('route_api', { endpoint: parts[1] });
-      return auditResponse(await apiHandler(parts.slice(1), request, env, requestId, logger, requestContext));
+      return dispatchRequestLog(await apiHandler(parts.slice(1), request, env, requestId, logger, requestContext), 'api');
     }
     if (parts[0] === 'admin') {
       logger.auth('admin_access_attempt', username, true);
-      return auditResponse(await adminHandler(parts.slice(1), request, env, requestId, logger, requestContext));
+      return dispatchRequestLog(await adminHandler(parts.slice(1), request, env, requestId, logger, requestContext), 'admin');
     }
     if (parts[0] === 'lookup') {
       logger.info('route_lookup', { type: parts[1] });
-      return auditResponse(await lookupHandler(parts.slice(1), request, env, requestId, logger, requestContext));
+      return dispatchRequestLog(await lookupHandler(parts.slice(1), request, env, requestId, logger, requestContext), 'lookup');
     }
     if (parts[0] === 'discord' || parts[0] === 'interactions') {
       const { handleDiscordInteraction, registerDiscordCommand } = await import('./discord-interactions.js');
       if (parts[0] === 'discord' && parts[1] === 'register') {
         logger.info('discord_command_register');
-        return await registerDiscordCommand(request, env, requestId, logger);
+        return dispatchRequestLog(await registerDiscordCommand(request, env, requestId, logger), 'discord');
       }
       logger.info('discord_interaction');
-      return await handleDiscordInteraction(request, env, requestId, logger);
+      return dispatchRequestLog(await handleDiscordInteraction(request, env, requestId, logger), 'discord');
     }
 
     logger.info('route_not_found', { path });

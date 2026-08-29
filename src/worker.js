@@ -1,7 +1,7 @@
 import { jsonResponse } from './response.js';
 import { handleRequest } from './orchestrator.js';
 import * as Vault from './vault-db.js';
-import { DATABASE_CONFIG } from './config.js';
+import { DATABASE_CONFIG, resolveApiMessage } from './config.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -19,7 +19,11 @@ export default {
       return await handleRequest(request, env, ctx);
     } catch (e) {
       console.error('Worker request failed:', e);
-      return jsonResponse({ error: true, message: 'internal error' }, 500);
+      return jsonResponse({
+        error: true,
+        message: resolveApiMessage('generic_error', 'request failed'),
+        hint: 'An unexpected error occurred. If this persists, contact support.'
+      }, 500);
     }
   },
 

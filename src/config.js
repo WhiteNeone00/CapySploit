@@ -226,6 +226,334 @@ export const DEFAULT_ADS = [
   'This spot is open for sponsors — book it for $5/month and stand out.'
 ];
 
+// ==================== DISCORD WEBHOOK LOGGING ====================
+// Central source for Discord webhook routing. Add as many hook URLs as you want to any channel,
+// then filter with allowed events, route modes, or admin/view-only rules without editing business logic.
+export const DISCORD_WEBHOOK_CONFIG = {
+  enabled: true,
+  timeoutMs: 8000,
+  defaultUsername: 'CAPI Event Feed',
+  defaultAvatarUrl: '',
+  defaultWebhookUrl: 'https://discord.com/api/webhooks/1542555438791393405/__a8rBRnvxO-OKoK8sTEhCVMJ_b-cgYHoQkUEZTgyeXomZNhe8E8l6VQP6j-BIXkEpkY',
+  eventStyles: {
+    request: { title: 'REQUEST RECEIVED', color: 0x3498DB, footer: 'CAPI Request Monitor' },
+    attack: { title: 'ATTACK LAUNCHED', color: 0xE74C3C, footer: 'CAPI Activity Monitor' },
+    view: { title: 'PLAN VIEWED', color: 0x2ECC71, footer: 'CAPI Activity Monitor' },
+    admin: { title: 'ADMIN ACTION', color: 0x9B59B6, footer: 'CAPI Admin Monitor' },
+    security: { title: 'SECURITY EVENT', color: 0xF1C40F, footer: 'CAPI Security Monitor' }
+  },
+  routeModes: {
+    admin_only: ['admin_only_logs', 'all_logs'],
+    view_only: ['view_only_logs', 'all_logs'],
+    logs_only: ['logs_only', 'send_only_logs', 'all_logs'],
+    send_only: ['send_only_logs', 'all_logs'],
+    all: ['all_logs']
+  },
+  channels: {
+    admin_only_logs: {
+      enabled: true,
+      urls: ['https://discord.com/api/webhooks/1542555438791393405/__a8rBRnvxO-OKoK8sTEhCVMJ_b-cgYHoQkUEZTgyeXomZNhe8E8l6VQP6j-BIXkEpkY'],
+      username: 'CAPI Admin',
+      avatar_url: '',
+      color: 0x5865F2,
+      allowed_events: ['admin', 'audit', 'security', 'attack', 'request'],
+      include_fields: ['action', 'admin_username', 'target_user', 'status', 'source_ip'],
+      route_mode: 'admin_only'
+    },
+    view_only_logs: {
+      enabled: true,
+      urls: ['https://discord.com/api/webhooks/1542555438791393405/__a8rBRnvxO-OKoK8sTEhCVMJ_b-cgYHoQkUEZTgyeXomZNhe8E8l6VQP6j-BIXkEpkY'],
+      username: 'CAPI Views',
+      avatar_url: '',
+      color: 0x7289DA,
+      allowed_events: ['view', 'read', 'lookup', 'attack', 'request'],
+      include_fields: ['route', 'username', 'target_user', 'status'],
+      route_mode: 'view_only'
+    },
+    logs_only: {
+      enabled: true,
+      urls: ['https://discord.com/api/webhooks/1542555438791393405/__a8rBRnvxO-OKoK8sTEhCVMJ_b-cgYHoQkUEZTgyeXomZNhe8E8l6VQP6j-BIXkEpkY'],
+      username: 'CAPI Events',
+      avatar_url: '',
+      color: 0x57F287,
+      allowed_events: ['audit', 'admin', 'view', 'read', 'lookup', 'system', 'attack', 'request'],
+      include_fields: ['action', 'route', 'target_user', 'status'],
+      route_mode: 'logs_only'
+    },
+    send_only_logs: {
+      enabled: true,
+      urls: ['https://discord.com/api/webhooks/1542555438791393405/__a8rBRnvxO-OKoK8sTEhCVMJ_b-cgYHoQkUEZTgyeXomZNhe8E8l6VQP6j-BIXkEpkY'],
+      username: 'CAPI Activity',
+      avatar_url: '',
+      color: 0xFAA61A,
+      allowed_events: ['audit', 'admin', 'view', 'read', 'lookup', 'system', 'attack', 'request'],
+      include_fields: ['action', 'route', 'target_user', 'status'],
+      route_mode: 'send_only'
+    },
+    all_logs: {
+      enabled: true,
+      urls: ['https://discord.com/api/webhooks/1542555438791393405/__a8rBRnvxO-OKoK8sTEhCVMJ_b-cgYHoQkUEZTgyeXomZNhe8E8l6VQP6j-BIXkEpkY'],
+      username: 'CAPI Full Feed',
+      avatar_url: '',
+      color: 0xEB459E,
+      allowed_events: ['audit', 'admin', 'view', 'read', 'lookup', 'system', 'security', 'attack', 'request'],
+      include_fields: ['action', 'route', 'target_user', 'status'],
+      route_mode: 'all'
+    }
+  }
+};
+
+export function getDiscordWebhookChannels() {
+  return DISCORD_WEBHOOK_CONFIG?.channels || {};
+}
+
+export function getDiscordWebhookUrls(channelKey) {
+  const channel = getDiscordWebhookChannels()[channelKey] || {};
+  const urls = Array.isArray(channel.urls) ? channel.urls : [];
+  return urls.filter(Boolean);
+}
+
+export function shouldDispatchDiscordWebhook(channelKey, eventType, context = {}) {
+  if (!DISCORD_WEBHOOK_CONFIG.enabled) return false;
+  const channel = getDiscordWebhookChannels()[channelKey] || {};
+  if (!channel.enabled || !Array.isArray(channel.urls) || channel.urls.length === 0) return false;
+
+  const allowed = Array.isArray(channel.allowed_events) ? channel.allowed_events : [];
+  if (allowed.length > 0 && !allowed.includes(eventType)) return false;
+
+  const routeMode = String(context?.mode || channel?.route_mode || 'all');
+  const permittedChannels = DISCORD_WEBHOOK_CONFIG.routeModes?.[routeMode] || ['all_logs'];
+  const matchesRoute = permittedChannels.includes(channelKey) || permittedChannels.includes('all_logs') || channelKey === 'all_logs';
+  if (!matchesRoute) return false;
+
+  return true;
+}
+
+export function buildDiscordWebhookEmbed(eventType, payload = {}, overrides = {}) {
+  const entry = payload && typeof payload === 'object' ? payload : { message: String(payload || '') };
+  const title = overrides.title || `${String(eventType || 'event').toUpperCase()} LOG`;
+  const description = overrides.description || entry.description || entry.message || 'No description supplied.';
+  const configuredFields = Array.isArray(overrides.includeFields) ? overrides.includeFields : null;
+  const fields = Array.isArray(overrides.fields) ? overrides.fields : [
+    ...(configuredFields || Object.keys(entry))
+      .map((key) => [key, entry[key]])
+      .filter(([key, value]) => key !== 'message' && key !== 'description' && value !== undefined && value !== null && value !== '')
+      .slice(0, 10)
+      .map(([key, value]) => ({ name: String(key).replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()), value: typeof value === 'string' ? value : JSON.stringify(value), inline: true }))
+  ];
+
+  return {
+    title,
+    description: String(description).slice(0, 2000),
+    color: overrides.color ?? 0x5865F2,
+    timestamp: new Date().toISOString(),
+    author: overrides.author ? { name: String(overrides.author).slice(0, 256) } : undefined,
+    url: overrides.url || undefined,
+    footer: overrides.footer ? { text: String(overrides.footer) } : { text: 'CAPI webhook' },
+    fields: fields.length ? fields.slice(0, 10).map((field) => ({
+      name: String(field.name || 'Details').slice(0, 256),
+      value: String(field.value || 'n/a').slice(0, 1024),
+      inline: Boolean(field.inline)
+    })) : []
+  };
+}
+
+export function buildDiscordWebhookPayload(eventType, payload = {}, options = {}) {
+  const channel = options.channel || {};
+  const eventLabel = String(eventType || 'event').toUpperCase();
+  const userName = channel.username || DISCORD_WEBHOOK_CONFIG.defaultUsername;
+  const avatarUrl = channel.avatar_url || DISCORD_WEBHOOK_CONFIG.defaultAvatarUrl;
+  const content = options.content || '';
+  const style = DISCORD_WEBHOOK_CONFIG.eventStyles?.[eventType] || {};
+
+  return {
+    username: userName,
+    avatar_url: avatarUrl || undefined,
+    content: content || undefined,
+    embeds: [
+      buildDiscordWebhookEmbed(eventType, payload, {
+        title: options.title || style.title || `${eventLabel} LOG`,
+        description: options.description || payload?.message || payload?.description || 'Webhook event fired.',
+        color: options.color ?? style.color ?? channel.color ?? 0x5865F2,
+        footer: options.footer || style.footer || 'CAPI Discord Alerts',
+        author: options.author || 'CAPI Control Plane',
+        includeFields: channel.include_fields,
+        fields: Array.isArray(options.fields) ? options.fields : undefined
+      })
+    ]
+  };
+}
+
+export async function sendDiscordWebhook(url, payload = {}, timeoutMs = DISCORD_WEBHOOK_CONFIG.timeoutMs) {
+  if (!url || !payload) return { ok: false, reason: 'missing_webhook' };
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    const text = await response.text();
+    clearTimeout(timer);
+    return {
+      ok: response.ok,
+      status: response.status,
+      reason: response.ok ? 'success' : text || 'webhook_failed',
+      text
+    };
+  } catch (error) {
+    return { ok: false, reason: error?.message || 'webhook_error' };
+  }
+}
+
+export async function sendDiscordWebhookForEvent(eventType, payload = {}, context = {}) {
+  if (!DISCORD_WEBHOOK_CONFIG.enabled) return [];
+
+  const results = [];
+  const seenUrls = new Set();
+  const channelKeys = Object.keys(getDiscordWebhookChannels());
+
+  for (const channelKey of channelKeys) {
+    const channel = getDiscordWebhookChannels()[channelKey] || {};
+    if (!channel.enabled) continue;
+    if (!shouldDispatchDiscordWebhook(channelKey, eventType, context)) continue;
+
+    const urls = getDiscordWebhookUrls(channelKey);
+    for (const url of urls) {
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+
+      const payloadToSend = buildDiscordWebhookPayload(eventType, payload, {
+        channel,
+        title: context.title,
+        description: context.description || payload?.message || payload?.description || 'CAPI event notification',
+        footer: context.footer,
+        author: context.author || 'CAPI Control Plane',
+        fields: Array.isArray(context.fields) ? context.fields : undefined,
+        content: context.content || `CAPI ${String(eventType || 'event').toUpperCase()} update`
+      });
+
+      const result = await sendDiscordWebhook(url, payloadToSend, DISCORD_WEBHOOK_CONFIG.timeoutMs);
+      results.push({ channel: channelKey, url, ...result });
+    }
+  }
+
+  return results;
+}
+
+// ==================== API RESPONSE TEXTS ====================
+// Central source for API response strings. Set enabled: false to disable a custom message
+// and fall back to the route-provided string, or change the value here to tweak wording globally.
+export const API_RESPONSE_TEXT = {
+  enabled: true,
+  templates: {
+    admin_auth_required: { enabled: true, message: 'admin authentication required', hint: 'Provide username and password as query parameters for the admin route.' },
+    missing_credentials: { enabled: true, message: 'missing credentials', hint: 'Provide username and password for this API route.' },
+    invalid_credentials: { enabled: true, message: 'invalid credentials', hint: 'Username or password is incorrect.' },
+    access_denied_ip: { enabled: true, message: 'access denied from this IP address', hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' },
+    account_suspended: { enabled: true, message: 'account suspended', hint: 'This account is suspended. Contact an administrator to restore access.' },
+    account_expired: { enabled: true, message: 'account expired', hint: 'Your account has expired. Contact an administrator to renew access.' },
+    no_ongoing_attacks: { enabled: true, message: 'No ongoing attacks found', hint: null },
+    ongoing_attacks_success: { enabled: true, message: 'Ongoing attacks retrieved successfully.', hint: 'The finish value shows how many seconds remain before the attack expires.' },
+    user_not_found: { enabled: true, message: 'user not found', hint: 'The requested user does not exist.' },
+    rate_limited: { enabled: true, message: 'rate limit exceeded', hint: 'You are making requests too quickly. Upgrade to bypass rate limits or wait before retrying.' },
+    generic_error: { enabled: true, message: 'request failed', hint: 'Review your request and try again.' },
+    network_statistics_success: { enabled: true, message: 'Network statistics retrieved successfully.' },
+    endpoint_catalog_loaded: { enabled: true, message: 'endpoint catalog loaded' },
+    graph_stats_loaded: { enabled: true, message: 'graph stats loaded' },
+    public_methods_loaded: { enabled: true, message: 'public methods loaded' },
+    discord_profile_loaded: { enabled: true, message: 'discord profile loaded' },
+    verification_code_generated: { enabled: true, message: 'verification code generated' },
+    discord_account_verified: { enabled: true, message: 'discord account verified' },
+    discord_account_unlinked: { enabled: true, message: 'Discord account unlinked successfully.' },
+    user_plan_retrieved: { enabled: true, message: 'User plan retrieved successfully.' },
+    attack_history_retrieved: { enabled: true, message: 'Attack history retrieved' },
+    attack_request_accepted: { enabled: true, message: 'Attack request accepted and launched successfully.' },
+    admin_init_completed: { enabled: true, message: 'System initialization completed' },
+    admin_status_check: { enabled: true, message: 'System status check' },
+    admin_stats_loaded: { enabled: true, message: 'Admin statistics loaded' },
+    attacks_status_retrieved: { enabled: true, message: 'Attacks status retrieved' },
+    attacks_toggled: { enabled: true, message: 'Attacks toggled globally' },
+    maintenance_status_retrieved: { enabled: true, message: 'Maintenance mode status retrieved' },
+    maintenance_mode_toggled: { enabled: true, message: 'Maintenance mode toggled' },
+    database_cleanup_completed: { enabled: true, message: 'Database cleanup completed' },
+    database_statistics_retrieved: { enabled: true, message: 'Database statistics retrieved' },
+    methods_synced: { enabled: true, message: 'Methods synced from payload.js' },
+    plan_updated: { enabled: true, message: 'Plan updated successfully.' },
+    method_updated: { enabled: true, message: 'Method access levels updated successfully.' },
+    service_settings_retrieved: { enabled: true, message: 'Service settings retrieved' },
+    service_settings_updated: { enabled: true, message: 'Service settings updated successfully' },
+    system_logs_retrieved: { enabled: true, message: 'System logs retrieved' },
+    audit_logs_retrieved: { enabled: true, message: 'Audit logs retrieved' },
+    system_users_retrieved: { enabled: true, message: 'System users retrieved' },
+    syntax_validation_failed: { enabled: true, message: 'Code syntax validation failed.' },
+    syntax_valid: { enabled: true, message: 'Code syntax is valid and error-free.' },
+    attack_methods_retrieved: { enabled: true, message: 'Attack methods retrieved' },
+    target_added_to_blacklist: { enabled: true, message: 'Target added to the blacklist.' },
+    blacklist_entries_retrieved: { enabled: true, message: 'Blacklist entries retrieved' },
+    blacklist_removed: { enabled: true, message: 'Blacklist entry has been removed.' },
+    user_suspended: { enabled: true, message: 'User suspended.' },
+    user_unsuspended: { enabled: true, message: 'User unsuspended.' },
+    user_created: { enabled: true, message: 'User created successfully.' },
+    user_password_changed: { enabled: true, message: 'Password changed successfully.' },
+    user_password_generated: { enabled: true, message: 'Password generated successfully.' },
+    user_field_updated: { enabled: true, message: 'User field updated successfully.' },
+    plan_assigned: { enabled: true, message: 'Plan assigned to user successfully.' },
+    user_deleted: { enabled: true, message: 'User deleted successfully.' },
+    user_logs_retrieved: { enabled: true, message: "User logs retrieved successfully." },
+    admin_discord_unlinked: { enabled: true, message: 'Discord account has been unlinked from user successfully.' },
+    log_database_unavailable: { enabled: true, message: 'Log database is unavailable.' },
+    admin_unknown_action: { enabled: true, message: 'unknown action', hint: 'Use ?action=get or ?action=set' },
+    discord_registration_not_configured: { enabled: true, message: 'Discord registration is not configured. Set DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID, and DISCORD_GUILD_ID.' },
+    discord_command_registered: { enabled: true, message: 'Discord command registered successfully' },
+    discord_interaction_reachable: { enabled: true, message: 'Discord interaction endpoint is reachable. POST Discord interactions with signature headers to this route.' },
+    discord_integration_not_configured: { enabled: true, message: 'Discord integration not configured properly' },
+    missing_username_to_add: { enabled: true, message: 'missing username_to_add', hint: 'Provide username_to_add in the request.' },
+    username_already_exists: { enabled: true, message: 'username already exists', hint: 'Choose a different username or use /admin/edit_user to modify.' },
+    weak_password: { enabled: true, message: 'weak password', hint: 'Password does not meet the required complexity rules.' },
+    plan_not_found: { enabled: true, message: 'plan not found', hint: 'The requested plan does not exist.' },
+    field_not_editable: { enabled: true, message: 'field not editable', hint: 'This field cannot be edited via this endpoint.' },
+    field_not_editable_for_security: { enabled: true, message: 'field not editable for security', hint: 'This field cannot be edited via this endpoint for security reasons.' },
+    invalid_or_unknown_code: { enabled: true, message: 'invalid or unknown code' },
+    code_already_used: { enabled: true, message: 'code already used' },
+    code_expired: { enabled: true, message: 'code expired' },
+    user_does_not_exist: { enabled: true, message: 'user does not exist' },
+    api_access_disabled: { enabled: true, message: 'api access disabled' },
+    user_already_verified: { enabled: true, message: 'user already verified via Discord; use admin/unlink_discord to reset' },
+    discord_already_linked: { enabled: true, message: 'This Discord account is already linked. Use /unlink first, then run /link again with a new code.' },
+    linked_user_no_longer_exists: { enabled: true, message: 'linked user no longer exists' },
+    discord_not_linked: { enabled: true, message: 'Discord account is not currently linked. Use /link to verify first.' },
+    discord_profile_not_linked: { enabled: true, message: 'Discord account not linked. Use /link to verify your account first; /plan is only available for linked users.' },
+    user_plan_retrieved_admin: { enabled: true, message: 'User plan retrieved successfully.' },
+    maintenance_toggled: { enabled: true, message: 'Maintenance mode toggled' },
+    unknown_action: { enabled: true, message: 'unknown action', hint: 'Use ?action=get or ?action=set' }
+  }
+};
+
+function interpolateTemplate(templateString, values = {}) {
+  if (typeof templateString !== 'string') return templateString;
+  return Object.entries(values).reduce((result, [key, value]) => {
+    const pattern = new RegExp(`\\{${String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}`, 'g');
+    return result.replace(pattern, String(value ?? ''));
+  }, templateString);
+}
+
+export function resolveApiMessage(key, fallback = null, values = {}) {
+  const template = API_RESPONSE_TEXT?.templates?.[key];
+  if (!template || template.enabled === false || !template.message) return fallback;
+  return interpolateTemplate(template.message, values);
+}
+
+export function resolveApiHint(key, fallback = 'Review your request and try again.', values = {}) {
+  const template = API_RESPONSE_TEXT?.templates?.[key];
+  if (!template || template.enabled === false) return fallback;
+  if (template.hint === null || template.hint === undefined) return fallback === undefined ? null : fallback;
+  return interpolateTemplate(template.hint, values);
+}
+
 // ==================== PASSWORD GENERATION ====================
 export const PASSWORD_CONFIG = {
   DEFAULT_LENGTH: 12,

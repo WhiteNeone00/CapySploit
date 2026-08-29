@@ -2,10 +2,35 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { jsonResponse, makePolishedError } from '../src/response.js';
 import { countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, recordUserWarning, setSystemSetting, syncMethodsFromPayload, updateMethod, getMethod, listMethods } from '../src/vault-db.js';
-import { logAuditAction } from '../src/admin.js';
+import { adminHandler, logAuditAction } from '../src/admin.js';
 import { getCachedSystemSetting, invalidateMethodCache, invalidateUserCache } from '../src/helpers.js';
 import { isMethodPermittedForUser } from '../src/policy.js';
-import { fanOutMethodApiLinks, getSafeIpInfo, ipLookup, resolveFastIpInfo } from '../src/api.js';
+import { fanOutMethodApiLinks, formatOngoingAttackResponse, getSafeIpInfo, ipLookup, resolveFastIpInfo } from '../src/api.js';
+import { buildDiscordWebhookPayload } from '../src/config.js';
+
+test('Discord webhook payloads use configured fields and readable event details', () => {
+  const payload = buildDiscordWebhookPayload('attack', {
+    route: 'attack',
+    username: 'alice',
+    target: '203.0.113.7',
+    method: 'udp',
+    duration: 60,
+    status: 'launched',
+    secret_value: 'must not be included'
+  }, {
+    channel: { username: 'CAPI Activity', color: 0x57F287, include_fields: ['route', 'username', 'target', 'method', 'duration', 'status'] },
+    title: 'ATTACK LAUNCHED',
+    description: 'alice launched an attack',
+    footer: 'CAPI Attack Feed'
+  });
+
+  assert.equal(payload.username, 'CAPI Activity');
+  assert.equal(payload.embeds[0].title, 'ATTACK LAUNCHED');
+  assert.deepEqual(payload.embeds[0].fields.map((field) => field.name), [
+    'Route', 'Username', 'Target', 'Method', 'Duration', 'Status'
+  ]);
+  assert.equal(payload.embeds[0].fields.some((field) => field.name === 'Secret Value'), false);
+});
 
 test('null IP metadata is treated as an empty object instead of crashing', () => {
   const result = getSafeIpInfo(null);
@@ -99,6 +124,70 @@ test('user lookups reuse cached results across repeated requests', async () => {
   assert.equal(calls, 1);
 });
 
+test('ongoing attack responses use the requested countdown format and empty state', () => {
+  const now = Date.now();
+  const payload = formatOngoingAttackResponse([
+    { target: '175.34.65.35', method: 'udp', port: 53, duration: 60, expires_at: new Date(now + 14000).toISOString() },
+    { target: '175.34.65.35', method: 'udp', port: 53, duration: 60, expires_at: new Date(now + 16000).toISOString() },
+    { target: '175.34.65.35', method: 'tcp', port: 53, duration: 60, expires_at: new Date(now + 25000).toISOString() },
+    { target: 'expired.example', method: 'udp', port: 53, duration: 60, expires_at: new Date(now - 1000).toISOString() },
+    { target: 'old.log', method: 'udp', port: 53, duration: 60 }
+  ]);
+
+  assert.equal(payload.error, false);
+  assert.equal(payload.message, 'Ongoing attacks retrieved successfully.');
+  assert.equal(payload.data.length, 3);
+  assert.deepEqual(payload.data[0], {
+    target: '175.34.65.35',
+    method: 'udp',
+    port: 53,
+    length: 60,
+    finish: '14 secs'
+  });
+
+  assert.deepEqual(formatOngoingAttackResponse([]), {
+    error: false,
+    message: 'No ongoing attacks found'
+  });
+});
+
+test('admin view_user_logs returns the configured log payload instead of a generic internal error', async () => {
+  const DB = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async all() {
+              if (sql.includes('SELECT COUNT(*) AS total FROM audit_logs')) return { results: [{ total: 0 }] };
+              if (sql.includes('SELECT * FROM audit_logs')) return { results: [] };
+              if (sql.includes('FROM users WHERE username = ?')) return { results: [{ username: 'root', password: 'admin123', admin: 1, whitelisted_ip: null, api: 1 }] };
+              if (sql.includes('FROM logs WHERE username = ?')) return { results: [{ id: 1, username: 'root', target: '1.1.1.1', port: '80', method: 'tcp', duration: '60', created_at: '2024-01-01T00:00:00.000Z' }] };
+              return { results: [] };
+            },
+            async run() { return {}; }
+          };
+        },
+        async all() {
+          if (sql.includes('FROM users WHERE username = ?')) return { results: [{ username: 'root', password: 'admin123', admin: 1, whitelisted_ip: null, api: 1 }] };
+          if (sql.includes('FROM logs WHERE username = ?')) return { results: [{ id: 1, username: 'root', target: '1.1.1.1', port: '80', method: 'tcp', duration: '60', created_at: '2024-01-01T00:00:00.000Z' }] };
+          return { results: [] };
+        },
+        async run() { return {}; }
+      };
+    }
+  };
+
+  const request = new Request('https://example.com/admin/view_user_logs?username=root&password=admin123&user_to_view=root');
+  const response = await adminHandler(['view_user_logs'], request, { capi_db: DB }, 'req-1', { info() {}, auth() {}, error() {}, warn() {}, metric() {}, security() {}, complete() {} }, { sourceIp: '127.0.0.1' });
+  const payload = JSON.parse(await response.text());
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.error, false);
+  assert.equal(payload.message, 'User logs retrieved successfully.');
+  assert.equal(payload.data.attack_logs.length, 1);
+  assert.equal('username' in payload.data.attack_logs[0], false);
+});
+
 test('fan-out backend links run in parallel without blocking the attack response', async () => {
   const started = Date.now();
   let calls = 0;
@@ -169,6 +258,9 @@ test('adds missing user columns for the current schema', async () => {
     prepare(sql) {
       calls.push(sql);
       return {
+        bind() {
+          return this;
+        },
         async run() {
           return { meta: { changes: 1 } };
         },

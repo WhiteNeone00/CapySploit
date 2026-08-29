@@ -5,8 +5,8 @@ import { getPayloadMethods, getPayloadBlacklists } from '../payload.js';
 import { getUserLimits, isMethodPermittedForUser } from './policy.js';
 import { generateVerificationCode, buildDiscordRoleNames, userPlanRole } from './discord.js';
 import { formatSlotBar, generateAttackId, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot, lookupIpInfo, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts, getClientIp, isUserIpAllowed } from './helpers.js';
-import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, USER_LIMITS } from './config.js';
-import { isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget, normalizeBlacklistValue, isBlacklistedTarget, isBlacklistedByMetadata, validatePayloadLength } from './validator.js';
+import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, resolveApiMessage, resolveApiHint, sendDiscordWebhookForEvent } from './config.js';
+import { isIPv4, isPrivateIPRange, isValidTarget, isUrlTarget, isBlacklistedTarget, isBlacklistedByMetadata, validatePayloadLength } from './validator.js';
 
 let SERVICE_START = null;
 export function getSafeIpInfo(ipinfo) {
@@ -109,29 +109,6 @@ export async function ipLookup(ipOrHost) {
   }
 }
 
-// Builds warning summary from user and warning object
-function buildWarningSummary(user, warnings = null) {
-  const base = warnings && typeof warnings === 'object' ? warnings : {
-    count: Number(user?.warning_count || 0),
-    limit: USER_LIMITS.DEFAULT_WARNING_LIMIT,
-    suspended: Boolean(user?.suspended || false),
-    reset_at: user?.warning_reset_at || null
-  };
-  const count = Number(base.count || 0);
-  const limit = Number(base.limit || USER_LIMITS.DEFAULT_WARNING_LIMIT);
-  const suspended = Boolean(user?.suspended || base.suspended);
-  const severity = count >= limit ? 'critical' : count >= 3 ? 'high' : count >= 1 ? 'medium' : 'clean';
-  return {
-    count,
-    limit,
-    suspended,
-    severity,
-    warn_status: `${count}/${limit}`,
-    label: suspended ? 'account suspended' : `${count}/${limit} warnings`,
-    detail: suspended ? 'Account is suspended and must be cleared by an admin.' : 'Warnings are tracked for abuse and policy enforcement.'
-  };
-}
-
 function expandApiLinkTemplate(template, record) {
   const target = String(record.target || '');
   const tokenMap = {
@@ -154,6 +131,42 @@ function expandApiLinkTemplate(template, record) {
     expanded = expanded.split(token).join(value);
   }
   return expanded;
+}
+
+export function formatOngoingAttackResponse(items = []) {
+  const filtered = (Array.isArray(items) ? items : [])
+    .filter((item) => item && Number(item?.duration || 0) > 0 && item?.expires_at)
+    .filter((item) => {
+      const expiresAt = new Date(item.expires_at).getTime();
+      return Number.isFinite(expiresAt) && expiresAt > Date.now();
+    });
+
+  if (!filtered.length) {
+    return {
+      error: false,
+      message: resolveApiMessage('no_ongoing_attacks', 'No ongoing attacks found'),
+      ...(resolveApiHint('no_ongoing_attacks', null) !== null ? { hint: resolveApiHint('no_ongoing_attacks', null) } : {})
+    };
+  }
+
+  const now = Date.now();
+  return {
+    error: false,
+    message: resolveApiMessage('ongoing_attacks_success', 'Ongoing attacks retrieved successfully.'),
+    data: filtered.map((item) => {
+      const expiresAt = new Date(item.expires_at).getTime();
+      const remainingMs = expiresAt > now ? Math.max(0, expiresAt - now) : 0;
+      const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
+
+      return {
+        target: item?.target || 'unknown',
+        method: (item?.method || 'udp').toLowerCase(),
+        port: Number(item?.port || 80),
+        length: Number(item?.duration || item?.length || 60),
+        finish: `${seconds} secs`
+      };
+    })
+  };
 }
 
 export async function fanOutMethodApiLinks(methodMeta, record) {
@@ -244,7 +257,7 @@ export async function fanOutMethodApiLinks(methodMeta, record) {
 }
 
 // IP and blacklist validation functions moved to validator.js
-// Import: isIPv4, isPrivateIPRange, isReservedDomain, isValidTarget, isUrlTarget, normalizeBlacklistValue, isBlacklistedTarget, isBlacklistedByMetadata
+// Import: isIPv4, isPrivateIPRange, isValidTarget, isUrlTarget, isBlacklistedTarget, isBlacklistedByMetadata
 
 export async function apiHandler(parts, request, env, requestId, logger, requestContext = {}) {
   const q = parseQuery(request);
@@ -252,8 +265,11 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   const GLOBAL_API_SLOTS = Number(env.GLOBAL_API_SLOTS || 30);
 
   // Reuse service metadata already loaded by the request orchestrator when available.
-  const serviceName = requestContext?.serviceName || await Vault.getServiceName(env);
-  const apiVersion = requestContext?.apiVersion || await Vault.getApiVersion(env);
+  const [serviceNameFromDb, apiVersionFromDb] = requestContext?.serviceName && requestContext?.apiVersion
+    ? [null, null]
+    : await Promise.all([Vault.getServiceName(env), Vault.getApiVersion(env)]);
+  const serviceName = requestContext?.serviceName || serviceNameFromDb;
+  const apiVersion = requestContext?.apiVersion || apiVersionFromDb;
 
   let requestUser = requestContext.user || null;
 
@@ -373,7 +389,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       Vault.countOngoing(env),
       Vault.countLogsToday(env),
       Vault.countVerifiedDiscordLinks(env),
-      Vault.getMaintenanceMode(env),
+      requestContext?.maintenanceMode !== undefined
+        ? Promise.resolve(requestContext.maintenanceMode)
+        : Vault.getMaintenanceMode(env),
       Vault.getAttacksDisabled(env)
     ]);
 
@@ -387,9 +405,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     return jsonResponse({
       error: false,
-      message: 'Network statistics retrieved successfully.',
+      message: resolveApiMessage('network_statistics_success', 'Network statistics retrieved successfully.'),
       data: {
-        online_users_count: 1,
+        online_users_count: activeUsers,
         total_users_count: total,
         active_users_count: activeUsers,
         vip_users_count: vipUsers,
@@ -415,7 +433,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   if (endpoint === 'endpoints' || endpoint === 'docs' || endpoint === 'help') {
     return jsonResponse({
       error: false,
-      message: 'endpoint catalog loaded',
+      message: resolveApiMessage('endpoint_catalog_loaded', 'endpoint catalog loaded'),
       data: {
         base_url: env.API_BASE_URL || APP_DEFAULTS.API_BASE_URL,
         endpoints: [
@@ -441,7 +459,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     // Batch all queries in parallel
     const [ongoing, maintenance, methodSlotCounts] = await Promise.all([
       Vault.countOngoing(env),
-      Vault.getMaintenanceMode(env),
+      requestContext?.maintenanceMode !== undefined
+        ? Promise.resolve(requestContext.maintenanceMode)
+        : Vault.getMaintenanceMode(env),
       Vault.countMethodsOngoingBatch(env, methodNames)
     ]);
     
@@ -538,7 +558,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         return aId - bId;
       });
 
-    return structuredResponse({ error: false, message: 'public methods loaded', data: { methods } });
+    return structuredResponse({ error: false, message: resolveApiMessage('public_methods_loaded', 'public methods loaded'), data: { methods } });
   }
 
   if (endpoint === 'discord_profile') {
@@ -555,7 +575,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const discordLink = await Vault.getDiscordLinkByUsername(env, user.username);
     return jsonResponse({
       error: false,
-      message: 'discord profile loaded',
+      message: resolveApiMessage('discord_profile_loaded', 'discord profile loaded'),
       data: {
         profile: {
           username: user.username,
@@ -595,19 +615,19 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (!username || !password || !client) return makePolishedError('missing username, password or client', 400, { hint: 'Send username, password and client=discord in the query string.' });
 
     const user = await Vault.getUser(env, username);
-    if (!user) return jsonResponse({ error: true, message: 'user does not exist', client, code: null }, 404, { service: serviceName, version: apiVersion });
-    if (!(await Vault.verifyUserPassword(env, user, password))) return jsonResponse({ error: true, message: 'wrong password', client, code: null }, 401, { service: serviceName, version: apiVersion });
+    if (!user) return jsonResponse({ error: true, message: resolveApiMessage('user_does_not_exist', 'user does not exist'), client, code: null }, 404, { service: serviceName, version: apiVersion });
+    if (!(await Vault.verifyUserPassword(env, user, password))) return jsonResponse({ error: true, message: resolveApiMessage('invalid_credentials', 'wrong password'), client, code: null }, 401, { service: serviceName, version: apiVersion });
     const clientIp = getClientIp(request);
     if (!isUserIpAllowed(user, clientIp)) return makePolishedError('access denied from this IP address', 403, { ip: clientIp, whitelisted_ip: user.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' });
     await Vault.updateUserLastIp(env, username, clientIp);
-    if (user.suspended) return jsonResponse({ error: true, message: 'account suspended', client, code: null }, 403, { service: serviceName, version: apiVersion });
-    if (!(user.api ?? user.api_access)) return jsonResponse({ error: true, message: 'api access disabled', client, code: null }, 403, { service: serviceName, version: apiVersion });
+    if (user.suspended) return jsonResponse({ error: true, message: resolveApiMessage('account_suspended', 'account suspended'), client, code: null }, 403, { service: serviceName, version: apiVersion });
+    if (!(user.api ?? user.api_access)) return jsonResponse({ error: true, message: resolveApiMessage('api_access_disabled', 'api access disabled'), client, code: null }, 403, { service: serviceName, version: apiVersion });
 
     const existingVerified = await Vault.getVerifiedDiscordLinkByUsername(env, username);
     if (existingVerified) {
       return jsonResponse({
         error: true,
-        message: 'user already verified via Discord; use admin/unlink_discord to reset',
+        message: resolveApiMessage('user_already_verified', 'user already verified via Discord; use admin/unlink_discord to reset'),
         client,
         code: null,
         discord_link: {
@@ -621,7 +641,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const code = generateVerificationCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await Vault.createDiscordLinkRequest(env, username, client, code, expiresAt);
-    return jsonResponse({ error: false, message: 'verification code generated', client, code, expires_at: expiresAt }, 200, { service: serviceName, version: apiVersion });
+    return jsonResponse({ error: false, message: resolveApiMessage('verification_code_generated', 'verification code generated'), client, code, expires_at: expiresAt }, 200, { service: serviceName, version: apiVersion });
   }
 
   if (endpoint === 'link') {
@@ -639,7 +659,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (existingDiscordLink) {
       return jsonResponse({
         error: true,
-        message: 'This Discord account is already linked. Use /unlink first, then run /link again with a new code.',
+        message: resolveApiMessage('discord_already_linked', 'This Discord account is already linked. Use /unlink first, then run /link again with a new code.'),
         client,
         code: null,
         discord_link: { username: existingDiscordLink.username, discord_user_id: discordUserId, discord_username: existingDiscordLink.discord_username }
@@ -647,16 +667,16 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     }
 
     const requestRow = await Vault.getDiscordLinkByCode(env, code);
-    if (!requestRow) return jsonResponse({ error: true, message: 'invalid or unknown code', client, code }, 404, { service: serviceName, version: apiVersion });
+    if (!requestRow) return jsonResponse({ error: true, message: resolveApiMessage('invalid_or_unknown_code', 'invalid or unknown code'), client, code }, 404, { service: serviceName, version: apiVersion });
     if (requestRow.client !== client) return jsonResponse({ error: true, message: 'client mismatch', client, code }, 400, { service: serviceName, version: apiVersion });
-    if (requestRow.status === 'verified') return jsonResponse({ error: true, message: 'code already used', client, code }, 409, { service: serviceName, version: apiVersion });
-    if (new Date() > new Date(requestRow.expires_at)) return jsonResponse({ error: true, message: 'code expired', client, code }, 410, { service: serviceName, version: apiVersion });
+    if (requestRow.status === 'verified') return jsonResponse({ error: true, message: resolveApiMessage('code_already_used', 'code already used'), client, code }, 409, { service: serviceName, version: apiVersion });
+    if (new Date() > new Date(requestRow.expires_at)) return jsonResponse({ error: true, message: resolveApiMessage('code_expired', 'code expired'), client, code }, 410, { service: serviceName, version: apiVersion });
 
     const existingVerified = await Vault.getVerifiedDiscordLinkByUsername(env, requestRow.username);
     if (existingVerified) {
       return jsonResponse({
         error: true,
-        message: 'The user account is already linked to Discord. Ask the current Discord owner to run /unlink first, then use /link again.',
+        message: resolveApiMessage('discord_already_linked', 'The user account is already linked to Discord. Ask the current Discord owner to run /unlink first, then use /link again.'),
         client,
         code,
         discord_link: { username: existingVerified.username, discord_user_id: existingVerified.discord_user_id, discord_username: existingVerified.discord_username }
@@ -665,11 +685,11 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     const verifiedRow = await Vault.verifyDiscordLinkCode(env, code, discordUserId, discordUsername);
     const linkedUser = await Vault.getUser(env, verifiedRow.username);
-    if (!linkedUser) return jsonResponse({ error: true, message: 'linked user no longer exists', client, code }, 500, { service: serviceName, version: apiVersion });
+    if (!linkedUser) return jsonResponse({ error: true, message: resolveApiMessage('linked_user_no_longer_exists', 'linked user no longer exists'), client, code }, 500, { service: serviceName, version: apiVersion });
 
     const roles = buildDiscordRoleNames(linkedUser, env);
     const planRole = userPlanRole(linkedUser, env);
-    return jsonResponse({ error: false, message: 'discord account verified', client, code, discord_user_id: discordUserId, username: linkedUser.username, roles, plan_role: planRole }, 200, { service: serviceName, version: apiVersion });
+    return jsonResponse({ error: false, message: resolveApiMessage('discord_account_verified', 'discord account verified'), client, code, discord_user_id: discordUserId, username: linkedUser.username, roles, plan_role: planRole }, 200, { service: serviceName, version: apiVersion });
   }
 
   if (endpoint === 'unlink') {
@@ -679,7 +699,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const discordUserId = q.discord_user_id || q.user_id || q.discord_id;
     if (!discordUserId) return makePolishedError('missing discord_user_id', 400, { hint: 'Provide discord_user_id to remove your Discord link.' });
     const existingLink = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordUserId);
-    if (!existingLink || !existingLink.username) return jsonResponse({ error: true, message: 'Discord account is not currently linked. Use /link to verify first.' }, 404, { service: serviceName, version: apiVersion });
+    if (!existingLink || !existingLink.username) return jsonResponse({ error: true, message: resolveApiMessage('discord_not_linked', 'Discord account is not currently linked. Use /link to verify first.') }, 404, { service: serviceName, version: apiVersion });
     
     let unlinked = null;
     try {
@@ -689,7 +709,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     }
     
     if (!unlinked || !unlinked.username) return jsonResponse({ error: true, message: 'Unable to unlink Discord account at this time.' }, 500, { service: serviceName, version: apiVersion });
-    return jsonResponse({ error: false, message: 'Discord account unlinked successfully.', discord_user_id: discordUserId, discord_username: unlinked.discord_username, username: unlinked.username, unlinked_at: unlinked.unlinked_at }, 200, { service: serviceName, version: apiVersion });
+    return jsonResponse({ error: false, message: resolveApiMessage('discord_account_unlinked', 'Discord account unlinked successfully.'), discord_user_id: discordUserId, discord_username: unlinked.discord_username, username: unlinked.username, unlinked_at: unlinked.unlinked_at }, 200, { service: serviceName, version: apiVersion });
   }
 
   if (endpoint === 'view_plan') {
@@ -728,9 +748,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const createdAt = u.created_at ? new Date(u.created_at).toISOString().replace('T', ' ').substring(0, 19) : null;
     const expiryDate = u.expiry_unix && u.expiry_unix > 0 ? new Date(u.expiry_unix * 1000).toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\//g, '-') : 'Lifetime';
     
-    return jsonResponse({
+    const responsePayload = {
       error: false,
-      message: 'User plan retrieved successfully.',
+      message: resolveApiMessage('user_plan_retrieved', 'User plan retrieved successfully.'),
       data: {
         username: u.username,
         admin: Boolean(u.admin),
@@ -761,7 +781,29 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         rank: rank,
         discord_linked: discordLink ? discordLink.discord_user_id : null
       }
-    }, 200, { service: serviceName });
+    };
+
+    void sendDiscordWebhookForEvent('view', {
+      route: 'view_plan',
+      username: u.username,
+      plan_type: planType,
+      rank,
+      status: 'success'
+    }, {
+      mode: 'view_only',
+      title: 'PLAN VIEW',
+      description: `User plan viewed for ${u.username}`,
+      footer: 'CAPI View Feed',
+      fields: [
+        { name: 'Route', value: 'view_plan', inline: true },
+        { name: 'Username', value: u.username, inline: true },
+        { name: 'Plan', value: planType, inline: true },
+        { name: 'Rank', value: rank, inline: true },
+        { name: 'Status', value: 'success', inline: true }
+      ]
+    }).catch(() => {});
+
+    return jsonResponse(responsePayload, 200, { service: serviceName });
   }
 
   if (endpoint === 'view_ongoing') {
@@ -799,10 +841,11 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     if (!username) return makePolishedError('missing credentials', 401, { hint: 'Provide username and password in the request.' });
 
-    // Return recent/ongoing for this user
+    // Return recent/ongoing for this user in the requested countdown format
     const limit = Number(qv.limit || 10);
     const recent = await Vault.getRecentAttacks(env, username, limit);
-    return jsonResponse({ error: false, user_only: true, ongoing: recent || [] }, 200, { service: serviceName, version: apiVersion });
+    const response = formatOngoingAttackResponse(recent || []);
+    return jsonResponse(response, 200, { service: serviceName, version: apiVersion });
   }
 
   if (endpoint === 'my_attacks') {
@@ -826,7 +869,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     
     return jsonResponse({
       error: false,
-      message: 'Attack history retrieved',
+      message: resolveApiMessage('attack_history_retrieved', 'Attack history retrieved'),
       data: {
         username: auth.username,
         total_attacks: totalAttacks,
@@ -910,7 +953,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       created_at: new Date().toISOString()
     };
 
-    const user = requestContext?.user || (record.username ? await Vault.getUser(env, record.username) : null);
+    const user = requestUser || requestContext?.user || (record.username ? await Vault.getUser(env, record.username) : null);
     if (!user) return makePolishedError('user does not exist', 404, { hint: 'Verify the username supplied in the request.' });
     if (!user.username) return makePolishedError('user record is invalid', 500, { hint: 'User account data is corrupted. Contact support.' });
 
@@ -1118,7 +1161,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     void fanOutMethodApiLinks(methodMeta, record).catch(() => {});
 
     const attacks_remaining = Math.max(0, Number(user.max_daily_attacks || 0) - Number(todays || 0));
-    const ongoing_now = ongoing;
     const attackEndTime = performance.now(); // End timing
     const executionTime = attackEndTime - attackStartTime; // Calculate execution time
     const attackId = generateAttackId(); // Generate unique attack ID
@@ -1164,6 +1206,31 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         time_to_send: `${executionTime.toFixed(6)}ms`
       }
     };
+
+    void sendDiscordWebhookForEvent('attack', {
+      route: 'attack',
+      username: user.username,
+      target: record.target,
+      method: record.method,
+      port: Number(record.port),
+      duration: Number(record.duration),
+      status: 'launched',
+      attack_id: attackId
+    }, {
+      mode: 'admin_only',
+      title: 'ATTACK LAUNCHED',
+      description: `${user.username} launched ${record.method} against ${record.target}`,
+      footer: 'CAPI Attack Feed',
+      fields: [
+        { name: 'Username', value: user.username, inline: true },
+        { name: 'Target', value: record.target, inline: true },
+        { name: 'Method', value: record.method, inline: true },
+        { name: 'Port', value: String(Number(record.port)), inline: true },
+        { name: 'Duration', value: `${Number(record.duration)} seconds`, inline: true },
+        { name: 'Attack ID', value: attackId, inline: true },
+        { name: 'Status', value: 'launched', inline: true }
+      ]
+    }).catch(() => {});
 
     releaseAttackSlots(record.username);
     void Vault.updateUserLastRequestTime(env, record.username, request.headers?.get?.('cf-connecting-ip') || null).catch(() => {});

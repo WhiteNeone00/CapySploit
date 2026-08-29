@@ -4,7 +4,7 @@ import * as Vault from './vault-db.js';
 import { initializeAll, getInitializationStatus } from './initialize.js';
 import { getPayloadMethods } from '../payload.js';
 import { sanitizeUserForResponse, paginate, validatePaginationParams, applyGlobalRateLimit, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts, isUserIpAllowed } from './helpers.js';
-import { PASSWORD_CONFIG, ADMIN_PROTECTED_FIELDS, ADMIN_EDITABLE_FIELDS, APP_DEFAULTS, USER_LIMITS } from './config.js';
+import { PASSWORD_CONFIG, ADMIN_PROTECTED_FIELDS, ADMIN_EDITABLE_FIELDS, APP_DEFAULTS, USER_LIMITS, resolveApiMessage, resolveApiHint, sendDiscordWebhookForEvent } from './config.js';
 
 // ==================== UTILITY FUNCTIONS ====================
 
@@ -91,6 +91,15 @@ export async function logAuditAction(env, adminUsername, action, targetUser, det
       created_at: new Date().toISOString()
     };
 
+    const webhookPayload = {
+      action: record.action,
+      admin_username: record.admin_username,
+      target_user: record.target_user,
+      source_ip: record.source_ip,
+      status: record.status,
+      details: details && typeof details === 'object' ? details : { raw: record.details }
+    };
+
     const insertSql = `INSERT INTO audit_logs (admin_username, action, target_user, details, source_ip, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`;
     const insertStatement = DB.prepare(insertSql);
     const executeInsert = typeof insertStatement.run === 'function'
@@ -121,6 +130,13 @@ export async function logAuditAction(env, adminUsername, action, targetUser, det
         await bound.run();
       }
     }
+
+    await sendDiscordWebhookForEvent('admin', webhookPayload, {
+      mode: 'admin_only',
+      title: 'ADMIN ACTION',
+      description: `Admin action: ${record.action}`,
+      footer: `CAPI Admin • ${record.status}`
+    });
 
     return { ok: true, status: record.status, created_at: record.created_at };
   } catch (error) {
@@ -233,7 +249,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     const initResult = await initializeAll(env);
     return jsonResponse({
       error: false,
-      message: 'System initialization completed',
+      message: resolveApiMessage('admin_init_completed', 'System initialization completed'),
       data: initResult,
       status: 'success'
     }, initResult.all_success ? 200 : 207);
@@ -246,7 +262,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     const status = await getInitializationStatus(env);
     return jsonResponse({
       error: false,
-      message: 'System status check',
+      message: resolveApiMessage('admin_status_check', 'System status check'),
       data: status,
       status: status.ready ? 'ready' : 'initializing'
     }, status.ready ? 200 : 503);
@@ -256,9 +272,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
   const guard = await requireAdminCredentials(q, env, requestContext);
   if (!guard.ok) return guard.response;
   
-  const admin = guard.admin || (requestContext?.user?.username === adminUsername
-    ? requestContext.user
-    : await Vault.getUser(env, adminUsername));
+  const admin = guard.admin;
   
   // Apply rate limiting with bypass support
   if (adminUsername && admin) {
@@ -334,8 +348,8 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     }, sourceIp, 'success');
     
     const responseMsg = passwordGenerated 
-      ? `User '${user.username}' created with auto-generated password (shown below). Save this password securely.`
-      : `User '${user.username}' created successfully.`;
+      ? resolveApiMessage('user_created', `User '${user.username}' created with auto-generated password (shown below). Save this password securely.`)
+      : resolveApiMessage('user_created', `User '${user.username}' created successfully.`);
     
     // Flattened response
     return jsonResponse({ 
@@ -366,7 +380,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     await Vault.saveUser(env, u);
     return jsonResponse({ 
       error: false, 
-      message: `Password for user '${q.user_to_change}' changed successfully.`,
+      message: resolveApiMessage('user_password_changed', `Password for user '${q.user_to_change}' changed successfully.`),
       user: q.user_to_change,
       changed_at: new Date().toISOString(),
       hint: 'Notify the user of their new password securely (e.g., via private message).'
@@ -385,7 +399,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     await Vault.saveUser(env, u);
     return jsonResponse({ 
       error: false, 
-      message: `New password generated for user '${q.user_to_reset}'. Show it to the user securely.`,
+      message: resolveApiMessage('user_password_generated', `New password generated for user '${q.user_to_reset}'. Show it to the user securely.`),
       user: q.user_to_reset,
       new_password: newPassword,
       reset_at: new Date().toISOString(),
@@ -431,7 +445,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     // Convert to appropriate type
     u[fieldName] = isNaN(Number(fieldValue)) ? fieldValue : Number(fieldValue);
     await Vault.saveUser(env, u);
-    return jsonResponse({ error: false, message: `User '${q.user_to_edit}' field '${fieldName}' updated successfully.`, field: fieldName, new_value: u[fieldName] });
+    return jsonResponse({ error: false, message: resolveApiMessage('user_field_updated', `User '${q.user_to_edit}' field '${fieldName}' updated successfully.`), field: fieldName, new_value: u[fieldName] });
   }
 
   if (endpoint === 'assign_plan' || endpoint === 'set_plan' || endpoint === 'give_plan') {
@@ -449,7 +463,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     const updatedUser = await Vault.applyPlanToUser(env, targetUsername, plan.name);
     return jsonResponse({
       error: false,
-      message: `Plan '${plan.name}' assigned to user '${targetUsername}'.`,
+      message: resolveApiMessage('plan_assigned', `Plan '${plan.name}' assigned to user '${targetUsername}'.`),
       user: updatedUser
     });
   }
@@ -464,13 +478,31 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
     await logAuditAction(env, adminUsername, 'delete_user', q.user_to_delete, { reason: 'User account deleted' }, sourceIp, 'success');
     
-    return jsonResponse({ error: false, message: `User '${q.user_to_delete}' has been deleted successfully.` });
+    return jsonResponse({ error: false, message: resolveApiMessage('user_deleted', `User '${q.user_to_delete}' has been deleted successfully.`) });
   }
 
   if (endpoint === 'view_user_logs') {
     if (!q.user_to_view) return makePolishedError('missing user_to_view', 400, { hint: 'Provide user_to_view in the request.' });
     const logs = await Vault.getLogs(env, q.user_to_view);
-    return structuredResponse({ error: false, message: `Attack logs for user '${q.user_to_view}' have been retrieved.`, data: { user: q.user_to_view, logs } });
+    const attackLogs = (Array.isArray(logs) ? logs : []).map(({ username, ...entry }) => entry);
+
+    await sendDiscordWebhookForEvent('view', {
+      route: 'view_user_logs',
+      username: q.user_to_view,
+      total_records: attackLogs.length,
+      source_ip: requestContext?.sourceIp || request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown'
+    }, {
+      mode: 'view_only',
+      title: 'LOG VIEW',
+      description: `User logs viewed for ${q.user_to_view}`,
+      footer: 'CAPI View Log Feed'
+    });
+
+    return structuredResponse({
+      error: false,
+      message: resolveApiMessage('user_logs_retrieved', 'User logs retrieved successfully.'),
+      data: { attack_logs: attackLogs }
+    });
   }
 
   if (endpoint === 'view_user_plan') {
@@ -511,7 +543,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     // Flattened response (no nested "user" object)
     return jsonResponse({
       error: false,
-      message: 'User plan retrieved successfully.',
+      message: resolveApiMessage('user_plan_retrieved_admin', 'User plan retrieved successfully.'),
       data: {
         username: u.username,
         password: u.password || null,
@@ -557,12 +589,12 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     if (!q.user_to_unlink) return makePolishedError('missing user_to_unlink', 400, { hint: 'Provide user_to_unlink in the request.' });
     const result = await Vault.unlinkDiscordLinkByUsername(env, q.user_to_unlink, adminUsername);
     if (!result) return makePolishedError('Discord link not found', 404, { hint: 'This user does not have an active Discord verification to unlink.' });
-    return jsonResponse({ error: false, message: `Discord account has been unlinked from user '${q.user_to_unlink}'.`, user: q.user_to_unlink, discord_user_id: result.discord_user_id, discord_username: result.discord_username, unlinked_at: result.unlinked_at });
+    return jsonResponse({ error: false, message: resolveApiMessage('admin_discord_unlinked', `Discord account has been unlinked from user '${q.user_to_unlink}'.`), user: q.user_to_unlink, discord_user_id: result.discord_user_id, discord_username: result.discord_username, unlinked_at: result.unlinked_at });
   }
 
   if (endpoint === 'view_all_logs') {
     const DBref = Vault.getDB(env);
-    if (!DBref) return structuredResponse({ error: false, message: 'Log database is unavailable.', data: { logs: [], pagination: null } });
+    if (!DBref) return structuredResponse({ error: false, message: resolveApiMessage('log_database_unavailable', 'Log database is unavailable.'), data: { logs: [], pagination: null } });
     const limit = q.limit || 50;
     const offset = q.offset || 0;
     const { limit: validLimit, offset: validOffset } = validatePaginationParams(limit, offset);
@@ -572,13 +604,24 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       DBref.prepare(`SELECT * FROM logs ORDER BY id DESC LIMIT ? OFFSET ?`).bind(validLimit, validOffset).all()
     ]);
     const total = countRes?.results?.[0]?.total || 0;
-    const logs = logsRes.results || [];
+    const logs = (logsRes.results || []).map(({ username, ...entry }) => entry);
     const totalPages = Math.ceil(total / validLimit);
     const page = Math.floor(validOffset / validLimit) + 1;
+
+    await sendDiscordWebhookForEvent('view', {
+      route: 'view_all_logs',
+      total_records: logs.length,
+      source_ip: requestContext?.sourceIp || request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown'
+    }, {
+      mode: 'view_only',
+      title: 'SYSTEM LOG VIEW',
+      description: `System logs viewed (${logs.length} of ${total} entries)`,
+      footer: 'CAPI System Log Feed'
+    });
     
     return structuredResponse({ 
       error: false, 
-      message: `System logs retrieved (${logs.length} of ${total} entries).`, 
+      message: `${resolveApiMessage('system_logs_retrieved', 'System logs retrieved')} (${logs.length} of ${total} entries).`,
       data: { 
         logs,
         pagination: {
@@ -600,7 +643,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
 
     return structuredResponse({
       error: false,
-      message: `Audit logs retrieved (${(auditData.logs || []).length} of ${auditData.total || 0} entries).`,
+      message: `${resolveApiMessage('audit_logs_retrieved', 'Audit logs retrieved')} (${(auditData.logs || []).length} of ${auditData.total || 0} entries).`,
       data: {
         logs: auditData.logs || [],
         pagination: {
@@ -627,7 +670,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     // Flattened response structure
     return jsonResponse({ 
       error: false, 
-      message: `System users retrieved (${sanitizedUsers.length} of ${paginatedResult.total} users).`, 
+      message: `${resolveApiMessage('system_users_retrieved', 'System users retrieved')} (${sanitizedUsers.length} of ${paginatedResult.total} users).`,
       data: sanitizedUsers,
       pagination: {
         total: paginatedResult.total, 
@@ -646,9 +689,9 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     if (!source) return makePolishedError('missing source', 400, { hint: 'Provide the source code to validate.' });
     const result = checkJavaScriptSyntax(source, q.file_name || q.file || 'inline.js');
     if (!result.valid) {
-      return structuredResponse({ error: true, message: 'Code syntax validation failed.', status: 400, extra: { debug: result } });
+      return structuredResponse({ error: true, message: resolveApiMessage('syntax_validation_failed', 'Code syntax validation failed.'), status: 400, extra: { debug: result } });
     }
-    return structuredResponse({ error: false, message: 'Code syntax is valid and error-free.', data: { valid: true, file: q.file_name || q.file || 'inline.js' } });
+    return structuredResponse({ error: false, message: resolveApiMessage('syntax_valid', 'Code syntax is valid and error-free.'), data: { valid: true, file: q.file_name || q.file || 'inline.js' } });
   }
 
   if (endpoint === 'list_methods') {
@@ -686,7 +729,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
 
     return structuredResponse({ 
       error: false, 
-      message: `Attack methods retrieved (${paginatedResult.items.length} of ${paginatedResult.total} methods).`, 
+      message: `${resolveApiMessage('attack_methods_retrieved', 'Attack methods retrieved')} (${paginatedResult.items.length} of ${paginatedResult.total} methods).`,
       data: { 
         methods: paginatedResult.items,
         pagination: {
@@ -701,7 +744,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
   if (endpoint === 'add_blacklist') {
     if (!q.target) return makePolishedError('missing target', 400, { hint: 'Provide the target to blacklist.' });
     await Vault.addBlacklistTarget(env, q.target, q.reason || 'manual');
-    return jsonResponse({ error: false, message: `Target '${q.target}' has been added to the blacklist.` });
+    return jsonResponse({ error: false, message: resolveApiMessage('target_added_to_blacklist', `Target '${q.target}' has been added to the blacklist.`) });
   }
 
   if (endpoint === 'list_blacklist') {
@@ -712,7 +755,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     
     return structuredResponse({ 
       error: false, 
-      message: `Blacklist entries retrieved (${paginatedResult.items.length} of ${paginatedResult.total} entries).`, 
+      message: `${resolveApiMessage('blacklist_entries_retrieved', 'Blacklist entries retrieved')} (${paginatedResult.items.length} of ${paginatedResult.total} entries).`,
       data: { 
         blacklist: paginatedResult.items,
         pagination: {
@@ -727,7 +770,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
   if (endpoint === 'remove_blacklist') {
     if (!q.target && !q.id) return makePolishedError('missing target or id', 400, { hint: 'Provide either the blacklist target or its id.' });
     await Vault.removeBlacklistTarget(env, q.target || q.id);
-    return jsonResponse({ error: false, message: 'Blacklist entry has been removed.' });
+    return jsonResponse({ error: false, message: resolveApiMessage('blacklist_removed', 'Blacklist entry has been removed.') });
   }
 
   if (endpoint === 'suspend_user') {
@@ -739,13 +782,13 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
     await logAuditAction(env, adminUsername, 'suspend_user', q.user_to_suspend, { reason }, sourceIp, 'success');
     
-    return jsonResponse({ error: false, message: `User '${q.user_to_suspend}' has been suspended.`, user: q.user_to_suspend, suspended_by: actor, suspend_reason: reason });
+    return jsonResponse({ error: false, message: resolveApiMessage('user_suspended', `User '${q.user_to_suspend}' has been suspended.`), user: q.user_to_suspend, suspended_by: actor, suspend_reason: reason });
   }
 
   if (endpoint === 'unsuspend_user') {
     if (!q.user_to_unsuspend) return makePolishedError('missing user_to_unsuspend', 400, { hint: 'Provide the target username to unsuspend.' });
     await Vault.setUserSuspension(env, q.user_to_unsuspend, false, null, null);
-    return jsonResponse({ error: false, message: `User '${q.user_to_unsuspend}' has been unsuspended.`, user: q.user_to_unsuspend });
+    return jsonResponse({ error: false, message: resolveApiMessage('user_unsuspended', `User '${q.user_to_unsuspend}' has been unsuspended.`), user: q.user_to_unsuspend });
   }
 
   if (endpoint === 'stats') {
@@ -755,7 +798,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     
     return jsonResponse({
       error: false,
-      message: 'Admin statistics loaded',
+      message: resolveApiMessage('admin_stats_loaded', 'Admin statistics loaded'),
       stats: {
         total_users: users.total || 0,
         suspended_users: users.suspended || 0,
@@ -780,7 +823,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       const isEnabled = await Vault.getMaintenanceMode(env);
       return jsonResponse({
         error: false,
-        message: 'Maintenance mode status retrieved',
+        message: resolveApiMessage('maintenance_status_retrieved', 'Maintenance mode status retrieved'),
         maintenance_mode: isEnabled,
         status: isEnabled ? 'ENABLED - API is in maintenance' : 'DISABLED - API is operational'
       });
@@ -790,7 +833,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     await Vault.setMaintenanceMode(env, enabled);
     return jsonResponse({
       error: false,
-      message: `Maintenance mode ${enabled ? 'enabled' : 'disabled'}`,
+      message: resolveApiMessage('maintenance_mode_toggled', `Maintenance mode ${enabled ? 'enabled' : 'disabled'}`),
       maintenance_mode: enabled,
       status: enabled ? '🔴 API is now in maintenance mode' : '🟢 API is operational'
     });
@@ -813,7 +856,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     
     return jsonResponse({
       error: false,
-      message: `Database cleanup completed - removed ${result.deleted} old records`,
+      message: `${resolveApiMessage('database_cleanup_completed', 'Database cleanup completed')} - removed ${result.deleted} old records`,
       cleanup_result: {
         deleted_records: result.deleted,
         retention_days: retentionDays,
@@ -832,7 +875,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     
     return jsonResponse({
       error: false,
-      message: 'Database statistics retrieved',
+      message: resolveApiMessage('database_statistics_retrieved', 'Database statistics retrieved'),
       data: stats
     });
   }
@@ -846,7 +889,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     
     return jsonResponse({
       error: false,
-      message: `Methods synced from payload.js - ${result.added} added, ${result.updated} updated`,
+      message: `${resolveApiMessage('methods_synced', 'Methods synced from payload.js')} - ${result.added} added, ${result.updated} updated`,
       sync_result: {
         methods_added: result.added,
         methods_updated: result.updated,
@@ -876,7 +919,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       await Vault.setAttacksDisabled(env, disabled);
       return jsonResponse({
         error: false,
-        message: `Attacks ${disabled ? 'disabled' : 'enabled'} globally`,
+        message: resolveApiMessage('attacks_toggled', `Attacks ${disabled ? 'disabled' : 'enabled'} globally`),
         attacks_disabled: disabled,
         status: disabled ? '🔴 All attacks are currently disabled' : '🟢 Attacks are enabled'
       });
@@ -885,7 +928,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       const currentStatus = await Vault.getAttacksDisabled(env);
       return jsonResponse({
         error: false,
-        message: 'Attacks status retrieved',
+        message: resolveApiMessage('attacks_status_retrieved', 'Attacks status retrieved'),
         attacks_disabled: currentStatus,
         status: currentStatus ? '🔴 All attacks are currently disabled' : '🟢 Attacks are enabled'
       });
@@ -921,7 +964,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       
       return jsonResponse({
         error: false,
-        message: `Plan '${q.plan_name}' updated successfully.`,
+        message: resolveApiMessage('plan_updated', `Plan '${q.plan_name}' updated successfully.`),
         plan: plan
       });
     } catch (e) {
@@ -968,7 +1011,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       
       return jsonResponse({
         error: false,
-        message: `Method '${q.method_name}' access levels updated successfully.`,
+        message: resolveApiMessage('method_updated', `Method '${q.method_name}' access levels updated successfully.`),
         method: method,
         access_config: {
           default_access: method.default_access,
@@ -996,7 +1039,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       const apiVersion = await Vault.getApiVersion(env);
       return jsonResponse({
         error: false,
-        message: 'Service settings retrieved',
+        message: resolveApiMessage('service_settings_retrieved', 'Service settings retrieved'),
         settings: {
           service_name: serviceName,
           api_version: apiVersion
@@ -1019,14 +1062,15 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       const updatedName = await Vault.getServiceName(env);
       const updatedVersion = await Vault.getApiVersion(env);
       
-      await logAuditAction(env, adminUsername, 'update_service_settings', null, { 
+      const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
+      await logAuditAction(env, adminUsername, 'update_service_settings', null, {
         service_name: q.service_name || null,
         api_version: q.api_version || null
       }, sourceIp, 'success');
       
       return jsonResponse({
         error: false,
-        message: 'Service settings updated successfully',
+        message: resolveApiMessage('service_settings_updated', 'Service settings updated successfully'),
         settings: {
           service_name: updatedName,
           api_version: updatedVersion
@@ -1034,7 +1078,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       });
     }
     
-    return makePolishedError('unknown action', 400, { hint: 'Use ?action=get or ?action=set' });
+    return makePolishedError(resolveApiMessage('admin_unknown_action', 'unknown action'), 400, { hint: resolveApiHint('admin_unknown_action', 'Use ?action=get or ?action=set') });
   }
 
   return routeNotFound();

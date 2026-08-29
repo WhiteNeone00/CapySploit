@@ -1,7 +1,5 @@
 import { DEFAULT_PAYLOAD } from '../payload.js';
-import { DEFAULT_ROOT_CREDENTIALS } from './config.js';
-
-import { DEFAULT_PLANS, USER_LIMITS } from './config.js';
+import { DEFAULT_ROOT_CREDENTIALS, DEFAULT_PLANS, USER_LIMITS } from './config.js';
 import {
   getCachedMethods,
   getCachedUser,
@@ -92,7 +90,6 @@ export async function ensureTables(env) {
       default_port INTEGER DEFAULT 80,
 
       price REAL DEFAULT 0,
-      default_port INTEGER DEFAULT 80,
 
       max_time INTEGER DEFAULT 60,
       max_concurrents INTEGER DEFAULT 1,
@@ -743,11 +740,8 @@ export async function getRecentAttacks(env, username, limit = 10) {
   const DB = getDB(env);
   if (!DB) return [];
   await cleanupOngoing(env);
-  const ongoingRes = await DB.prepare("SELECT id, username, target, port, method, duration, started_at AS created_at, expires_at, status FROM ongoing_attacks WHERE username = ? AND status='running' ORDER BY started_at DESC").bind(username).all();
-  const ongoing = ongoingRes.results || [];
-  const logsRes = await DB.prepare('SELECT id, username, target, port, method, duration, created_at FROM logs WHERE username = ? ORDER BY created_at DESC LIMIT ?').bind(username, Number(limit || 10)).all();
-  const logs = logsRes.results || [];
-  return [...ongoing, ...logs].slice(0, Number(limit || 10));
+  const ongoingRes = await DB.prepare("SELECT id, username, target, port, method, duration, started_at AS created_at, expires_at, status FROM ongoing_attacks WHERE username = ? AND status='running' AND datetime(expires_at) > datetime('now') ORDER BY started_at DESC LIMIT ?").bind(username, Number(limit || 10)).all();
+  return ongoingRes.results || [];
 }
 
 export async function listMethods(env) {
