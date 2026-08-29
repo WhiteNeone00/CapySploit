@@ -1,6 +1,0 @@
---2026-08-26 13:54:59--  https://capi.insideproxy.me/admin/view_user_plan?username=root
-Resolving capi.insideproxy.me (capi.insideproxy.me)... 172.67.165.44, 104.21.11.52, 2a06:98c1:3121::3, ...
-Connecting to capi.insideproxy.me (capi.insideproxy.me)|172.67.165.44|:443... connected.
-HTTP request sent, awaiting response... 401 Unauthorized
-
-Username/Password Authentication Failed.
