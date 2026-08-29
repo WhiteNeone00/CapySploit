@@ -10,7 +10,7 @@ Notes:
 
 ---
 
-## Health / root
+## Root status payload
 Request: GET /
 
 Response (200):
@@ -88,33 +88,6 @@ Response (200):
   "maintenance_mode": false,
   "src_name": "CAPI",
   "src_uptime": "up",
-  "timestamp": "<timestamp>",
-  "service": "<service>",
-  "version": "1.0.0",
-  "tips": "<tip>",
-  "ads": "<ad>"
-}
-```
-
-### GET /api/endpoints (also /api/docs or /api/help)
-Response (200):
-
-```json
-{
-  "error": false,
-  "message": "endpoint catalog loaded",
-  "data": {
-    "base_url": "<env.API_BASE_URL or https://capi.insideproxy.me>",
-    "endpoints": [
-      { "name": "GET /api/attack", "description": "Launch an attack", "usage": "?username=demo&host=1.1.1.1&port=80&time=60&method=udp" },
-      { "name": "GET /api/discord_profile", "description": "Show the linked profile for a Discord user", "usage": "?discord_user_id=123456789" },
-      { "name": "GET /api/link", "description": "Verify a Discord account with a code", "usage": "?code=ABC123&discord_user_id=123456789&discord_username=YourName" },
-      { "name": "GET /api/unlink", "description": "Unlink a Discord account", "usage": "?discord_user_id=123456789" },
-      { "name": "GET /api/network_statistics", "description": "Show global stats and counters", "usage": "" },
-      { "name": "GET /api/graph", "description": "Show slot and uptime statistics", "usage": "" },
-      { "name": "GET /admin/list_methods", "description": "List available methods", "usage": "" }
-    ]
-  },
   "timestamp": "<timestamp>",
   "service": "<service>",
   "version": "1.0.0",

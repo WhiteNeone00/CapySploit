@@ -5,8 +5,29 @@ import { countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, re
 import { adminHandler, logAuditAction } from '../src/admin.js';
 import { getCachedSystemSetting, invalidateMethodCache, invalidateUserCache } from '../src/helpers.js';
 import { isMethodPermittedForUser } from '../src/policy.js';
-import { fanOutMethodApiLinks, formatOngoingAttackResponse, getSafeIpInfo, ipLookup, resolveFastIpInfo } from '../src/api.js';
+import { fanOutMethodApiLinks, formatOngoingAttackResponse, getSafeIpInfo, ipLookup, normalizeProfilePayload, resolveFastIpInfo } from '../src/api.js';
 import { buildDiscordWebhookPayload } from '../src/config.js';
+
+test('profile payloads are flattened directly into data instead of nested under profile', () => {
+  const normalized = normalizeProfilePayload({
+    username: 'alice',
+    admin: false,
+    vip: false,
+    holder: false,
+    reseller: false,
+    warnings: 2,
+    discord_link: null,
+    profile: {
+      username: 'nested',
+      admin: true
+    }
+  });
+
+  assert.equal(normalized.username, 'alice');
+  assert.equal(normalized.admin, false);
+  assert.equal('profile' in normalized, false);
+  assert.equal(normalized.warnings, 2);
+});
 
 test('auth errors keep error-first ordering and omit redundant lock counters', async () => {
   const response = makePolishedError('invalid credentials', 401, {

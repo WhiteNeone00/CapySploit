@@ -132,7 +132,7 @@ export async function handleRequest(request, env, ctx = null) {
       }, 503, { service: serviceName, version: apiVersion, requestId });
     }
 
-    if (path === '' || path === 'health') {
+    if (path === '') {
       logger.metric('health_check', 1);
       return jsonResponse({
         name: serviceName,

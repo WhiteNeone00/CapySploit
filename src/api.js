@@ -167,6 +167,14 @@ export function formatOngoingAttackResponse(items = []) {
   };
 }
 
+export function normalizeProfilePayload(payload = {}) {
+  if (!payload || typeof payload !== 'object') return {};
+
+  const flat = { ...(payload.profile && typeof payload.profile === 'object' ? payload.profile : {}), ...payload };
+  delete flat.profile;
+  return flat;
+}
+
 export async function fanOutMethodApiLinks(methodMeta, record) {
   const apiLinks = Array.isArray(methodMeta?.api_links) ? methodMeta.api_links : [];
   if (!apiLinks.length) return [];
@@ -428,25 +436,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   }
 
 
-  if (endpoint === 'endpoints' || endpoint === 'docs' || endpoint === 'help') {
-    return jsonResponse({
-      error: false,
-      message: resolveApiMessage('endpoint_catalog_loaded', 'endpoint catalog loaded'),
-      data: {
-        base_url: env.API_BASE_URL || APP_DEFAULTS.API_BASE_URL,
-        endpoints: [
-          { name: 'GET /api/attack', description: 'Launch an attack', usage: '?username=demo&host=1.1.1.1&port=80&time=60&method=udp' },
-          { name: 'GET /api/discord_profile', description: 'Show the linked profile for a Discord user', usage: '?discord_user_id=123456789' },
-          { name: 'GET /api/link', description: 'Verify a Discord account with a code', usage: '?code=ABC123&discord_user_id=123456789&discord_username=YourName' },
-          { name: 'GET /api/unlink', description: 'Unlink a Discord account', usage: '?discord_user_id=123456789' },
-          { name: 'GET /api/network_statistics', description: 'Show global stats and counters', usage: '' },
-          { name: 'GET /api/graph', description: 'Show slot and uptime statistics', usage: '' },
-          { name: 'GET /admin/list_methods', description: 'List available methods', usage: '' }
-        ]
-      }
-    }, 200, { service: serviceName, version: apiVersion });
-  }
-
   if (endpoint === 'graph') {
     if (!SERVICE_START) SERVICE_START = Date.now();
     
@@ -571,37 +560,36 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (!user) return jsonResponse({ error: true, message: 'Linked user account no longer exists.' }, 500, { service: serviceName, version: apiVersion });
     const warningSummary = await Vault.getUserWarningSummary(env, user.username);
     const discordLink = await Vault.getDiscordLinkByUsername(env, user.username);
+    const profilePayload = normalizeProfilePayload({
+      username: user.username,
+      admin: Boolean(user.admin),
+      vip: Boolean(user.vip),
+      holder: Boolean(user.holder),
+      reseller: Boolean(user.reseller),
+      max_time: Number(user.max_time || 60),
+      cooldown: Number(user.cooldown || 10),
+      max_concurrents: Number(user.max_concurrents || 1),
+      max_daily_attacks: Number(user.max_daily_attacks || 100),
+      suspended: Boolean(user.suspended),
+      suspend_reason: user.suspend_reason || null,
+      suspended_by: user.suspended_by || null,
+      service_name: serviceName,
+      resellers_service: Boolean(user.created_by && user.created_by !== user.username),
+      expiry_unix: Number(user.expiry_unix || 0),
+      is_banned: Boolean(user.suspended),
+      powered_saving: isPowerSavingEnabled(user.power_saving),
+      anti_spam: Boolean(user.bypass_anti_spam || false),
+      bypass_blacklist: Boolean(user.bypass_blacklist || false),
+      api: Boolean(user.api ?? user.api_access),
+      mfa_enabled: Boolean(user.mfa_enabled || false),
+      account_status: user.suspended ? 'suspended' : warningSummary.count >= 5 ? 'at_limit' : 'active',
+      warnings: Number(warningSummary.count || 0),
+      discord_link: discordLink
+    });
     return jsonResponse({
       error: false,
       message: resolveApiMessage('discord_profile_loaded', 'discord profile loaded'),
-      data: {
-        profile: {
-          username: user.username,
-          admin: Boolean(user.admin),
-          vip: Boolean(user.vip),
-          holder: Boolean(user.holder),
-          reseller: Boolean(user.reseller),
-          max_time: Number(user.max_time || 60),
-          cooldown: Number(user.cooldown || 10),
-          max_concurrents: Number(user.max_concurrents || 1),
-          max_daily_attacks: Number(user.max_daily_attacks || 100),
-          suspended: Boolean(user.suspended),
-          suspend_reason: user.suspend_reason || null,
-          suspended_by: user.suspended_by || null,
-          service_name: serviceName,
-          resellers_service: Boolean(user.created_by && user.created_by !== user.username),
-          expiry_unix: Number(user.expiry_unix || 0),
-          is_banned: Boolean(user.suspended),
-          powered_saving: isPowerSavingEnabled(user.power_saving),
-          anti_spam: Boolean(user.bypass_anti_spam || false),
-          bypass_blacklist: Boolean(user.bypass_blacklist || false),
-          api: Boolean(user.api ?? user.api_access),
-          mfa_enabled: Boolean(user.mfa_enabled || false),
-          account_status: user.suspended ? 'suspended' : warningSummary.count >= 5 ? 'at_limit' : 'active',
-          warnings: Number(warningSummary.count || 0),
-          discord_link: discordLink
-        }
-      },
+      data: profilePayload,
       service: serviceName
     }, 200, { service: serviceName });
   }
@@ -757,24 +745,22 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         reseller: Boolean(u.reseller),
         owner: Boolean(u.owner || false),
         api: Boolean(u.api ?? u.api_access),
-        plan_id: planSettings?.plan_id ?? u.plan_id ?? null,
         max_time: Number(u.max_time || 60),
+        min_time: Number(u.min_time || 0),
         cooldown: Number(u.cooldown || 10),
-        max_concurrents: Number(u.max_concurrents || 1),
+        concurrents: Number(u.max_concurrents || u.concurrents || 1),
         max_daily_attacks: Number(u.max_daily_attacks || 100),
         attacks_remaining: attacksRemaining,
-        power_saving: isPowerSavingEnabled(u.power_saving),
-        bypass_power: !isPowerSavingEnabled(u.power_saving),
+        powersaving: isPowerSavingEnabled(u.power_saving),
         bypass_anti_spam: Boolean(u.bypass_anti_spam || false),
         bypass_blacklist: Boolean(u.bypass_blacklist || false),
-        raw_access: Boolean(planSettings?.raw_access ?? u.raw_access),
-        star_access: Boolean(planSettings?.star_access ?? u.star_access),
-        botnet_access: Boolean(planSettings?.botnet_access ?? u.botnet_access),
-        private_access: Boolean(planSettings?.private_access ?? u.private_access),
         suspended: Boolean(u.suspended),
         created_by: u.created_by || null,
         creation_date: createdAt,
-        expiry_date: expiryDate,
+        expiry_unix: Number(u.expiry_unix || 0),
+        formatted_expiry: expiryDate,
+        service_name: serviceName,
+        warnings: Number((await Vault.getUserWarningSummary(env, u.username)).count || 0),
         plan_type: planType,
         rank: rank,
         discord_linked: discordLink ? discordLink.discord_user_id : null

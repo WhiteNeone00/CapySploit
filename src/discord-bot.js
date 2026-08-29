@@ -971,7 +971,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    const profile = payload.data.profile;
+    const profile = payload.data;
     const expiry = profile.expiry_unix ? new Date(Number(profile.expiry_unix) * 1000).toLocaleString('en-GB', { timeZone: 'UTC' }) : 'Never';
     const boolLabel = (value) => (value ? 'Yes' : 'No');
     const statusColor = profile.is_banned ? 0xE74C3C : profile.account_status === 'at_limit' ? 0xF39C12 : 0x2ECC71;
@@ -1124,7 +1124,7 @@ client.on('interactionCreate', async (interaction) => {
       const profileRes = await apiFetch(`/api/discord_profile?discord_user_id=${encodeURIComponent(discordId)}`, { headers: profileHeaders });
       const profileBody = await profileRes.json();
       if (profileBody.error) return await interaction.editReply({ content: `No linked profile: ${profileBody.message || 'link your account with /link'}` });
-      const username = profileBody.data?.profile?.username || 'unknown';
+      const username = profileBody.data?.username || 'unknown';
       const headers = botKey ? { Authorization: `Bearer ${botKey}` } : {};
       const ongoingRes = await apiFetch(`/api/view_ongoing?discord_user_id=${encodeURIComponent(discordId)}`, { headers });
       const ongoingBody = await ongoingRes.json();
@@ -1297,7 +1297,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    const profile = profilePayload.data.profile;
+    const profile = profilePayload.data;
     if (!(profile.api ?? profile.api_access)) {
       await interaction.editReply({ content: 'Your account does not have API access enabled.' });
       return;
