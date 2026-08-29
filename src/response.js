@@ -201,13 +201,20 @@ export function makePolishedError(message, status = 400, extra = {}) {
   const hintKey = extra.hintKey || null;
   const resolvedMessage = resolveApiMessage(messageKey, message || 'request failed');
   const resolvedHint = resolveApiHint(hintKey || messageKey, extra.hint || 'Review your request and try again.');
+  const { attempts, limit, ...safeExtra } = extra || {};
 
-  return jsonResponse({
+  const payload = {
     error: true,
-    ...extra,
-    message: resolvedMessage,
-    hint: resolvedHint
-  }, status);
+    message: resolvedMessage
+  };
+
+  if (resolvedHint !== null && resolvedHint !== undefined && resolvedHint !== '') {
+    payload.hint = resolvedHint;
+  }
+
+  Object.assign(payload, safeExtra);
+
+  return jsonResponse(payload, status);
 }
 
 export function jsonResponse(payload, status = 200, options = {}) {

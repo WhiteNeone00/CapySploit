@@ -8,6 +8,20 @@ import { isMethodPermittedForUser } from '../src/policy.js';
 import { fanOutMethodApiLinks, formatOngoingAttackResponse, getSafeIpInfo, ipLookup, resolveFastIpInfo } from '../src/api.js';
 import { buildDiscordWebhookPayload } from '../src/config.js';
 
+test('auth errors keep error-first ordering and omit redundant lock counters', async () => {
+  const response = makePolishedError('invalid credentials', 401, {
+    hint: '4 attempts remaining before account lock.'
+  });
+  const payload = JSON.parse(await response.text());
+
+  assert.deepEqual(Object.keys(payload), ['error', 'message', 'hint', 'timestamp', 'service', 'version', 'ads']);
+  assert.equal(payload.error, true);
+  assert.equal(payload.message, 'invalid credentials');
+  assert.equal(payload.hint, '4 attempts remaining before account lock.');
+  assert.equal('attempts' in payload, false);
+  assert.equal('limit' in payload, false);
+});
+
 test('Discord webhook payloads use configured fields and readable event details', () => {
   const payload = buildDiscordWebhookPayload('attack', {
     route: 'attack',

@@ -189,40 +189,35 @@ async function requireAdminCredentials(q, env, requestContext = {}) {
   // Check if account is locked due to failed auth attempts
   const authStatus = getFailedAuthAttempts(username);
   if (authStatus.isLocked) {
-    return { 
-      ok: false, 
+    return {
+      ok: false,
       response: makePolishedError(
-        `Account temporarily locked after ${authStatus.limit} failed attempts. Wait ${authStatus.nextAttemptAvailable} seconds before trying again.`, 
-        429, 
-        { 
+        `Account temporarily locked after ${authStatus.limit} failed attempts. Wait ${authStatus.nextAttemptAvailable} seconds before trying again.`,
+        429,
+        {
           hint: `Your account is locked for security. Try again in ${authStatus.nextAttemptAvailable} seconds.`,
-          locked: true,
-          attempts: authStatus.attempts,
-          limit: authStatus.limit
+          locked: true
         }
-      ) 
+      )
     };
   }
 
   const admin = await Vault.getUser(env, username, { fresh: true });
   if (!admin || !(await Vault.verifyUserPassword(env, admin, password)) || !admin.admin) {
-    // Track failed attempt
     const newAttemptCount = trackFailedAuthAttempt(username);
     const remainingAttempts = authStatus.limit - newAttemptCount;
-    
-    return { 
-      ok: false, 
+
+    return {
+      ok: false,
       response: makePolishedError(
-        `Invalid admin credentials (${newAttemptCount}/${authStatus.limit} attempts)`, 
-        401, 
-        { 
-          hint: remainingAttempts > 0 
+        `Invalid admin credentials (${newAttemptCount}/${authStatus.limit} attempts)`,
+        401,
+        {
+          hint: remainingAttempts > 0
             ? `${remainingAttempts} attempt${remainingAttempts !== 1 ? 's' : ''} remaining before account lock.`
-            : 'Account is now locked. Wait 15 minutes before trying again.',
-          attempts: newAttemptCount,
-          limit: authStatus.limit
+            : 'Account is now locked. Wait 15 minutes before trying again.'
         }
-      ) 
+      )
     };
   }
 
