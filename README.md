@@ -138,6 +138,32 @@ Common endpoints include:
 
 These routes are used for operational checks, plan inspection, auth, Discord claims, and attack tracking.
 
+### Methods response shape
+
+```json
+{
+  "error": false,
+  "message": "public methods loaded",
+  "data": [
+    {
+      "id": 1,
+      "name": "udp",
+      "description": "UDP flood attack",
+      "target_type": "ip",
+      "default_port": 80,
+      "min_time": 10,
+      "max_time": 600,
+      "max_concurrents": 3,
+      "max_slots": 10
+    }
+  ],
+  "timestamp": "2026-08-29T16:13:55.223Z",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "ads": "This spot is open for sponsors."
+}
+```
+
 ### Admin routes
 
 Admin routes live under `/admin/...` and require valid admin-level auth. They cover:

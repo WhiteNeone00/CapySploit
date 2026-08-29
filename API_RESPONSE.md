@@ -132,30 +132,30 @@ Success (200):
 {
   "error": false,
   "message": "public methods loaded",
-  "data": {
-    "methods": [
-      {
-        "id": 1,
-        "name": "udp",
-        "description": "UDP flood attack",
-        "target_type": "ip",
-        "default_port": 80,
-        "max_time": 600,
-        "max_concurrents": 5,
-        "max_slots": 10
-      },
-      {
-        "id": 2,
-        "name": "tcp",
-        "description": "TCP connection attack",
-        "target_type": "ip",
-        "default_port": 80,
-        "max_time": 300,
-        "max_concurrents": 3,
-        "max_slots": 8
-      }
-    ]
-  },
+  "data": [
+    {
+      "id": 1,
+      "name": "udp",
+      "description": "UDP flood attack",
+      "target_type": "ip",
+      "default_port": 80,
+      "min_time": 10,
+      "max_time": 600,
+      "max_concurrents": 5,
+      "max_slots": 10
+    },
+    {
+      "id": 2,
+      "name": "tcp",
+      "description": "TCP connection attack",
+      "target_type": "ip",
+      "default_port": 80,
+      "min_time": 10,
+      "max_time": 300,
+      "max_concurrents": 3,
+      "max_slots": 8
+    }
+  ],
   "timestamp": "2026-08-29T16:13:55.223Z",
   "service": "CAPI",
   "version": "1.0.0",

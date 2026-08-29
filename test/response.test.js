@@ -29,6 +29,23 @@ test('profile payloads are flattened directly into data instead of nested under 
   assert.equal(normalized.warnings, 2);
 });
 
+test('methods responses return a direct array in data and include min_time metadata', async () => {
+  const methods = [
+    { id: 1, name: 'udp', description: 'UDP flood', target_type: 'ip', default_port: 80, min_time: 10, max_time: 600, max_concurrents: 3, max_slots: 10 }
+  ];
+
+  const response = {
+    error: false,
+    message: 'public methods loaded',
+    data: methods
+  };
+
+  assert.equal(Array.isArray(response.data), true);
+  assert.equal(response.data[0].name, 'udp');
+  assert.equal('methods' in response.data, false);
+  assert.equal(response.data[0].min_time, 10);
+});
+
 test('auth errors keep error-first ordering and omit redundant lock counters', async () => {
   const response = makePolishedError('invalid credentials', 401, {
     hint: '4 attempts remaining before account lock.'

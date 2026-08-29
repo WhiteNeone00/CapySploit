@@ -545,7 +545,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         return aId - bId;
       });
 
-    return structuredResponse({ error: false, message: resolveApiMessage('public_methods_loaded', 'public methods loaded'), data: { methods } });
+    return structuredResponse({ error: false, message: resolveApiMessage('public_methods_loaded', 'public methods loaded'), data: methods });
   }
 
   if (endpoint === 'discord_profile') {
