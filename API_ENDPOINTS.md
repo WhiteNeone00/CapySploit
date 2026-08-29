@@ -1,19 +1,25 @@
 # CAPI — Exact Endpoint Responses
 
-This file documents every route implemented in the codebase and shows the exact JSON response shapes the server returns (including the meta fields injected by the response helpers).
+This document reflects the live JSON contract used by the CAPI workers. The payloads below are intentionally pretty-printed and written to match the runtime order and field layout used in the responders.
 
 Notes:
-- Dynamic values use placeholders such as `<timestamp>`, `<service>`, `<tip>`, `<ad>`, `<number>`, `<string>`, `<bool>`, or `<object>`.
-- `jsonResponse()` and `structuredResponse()` add these keys to the JSON bodies: `timestamp`, `service`, `version`, `tips`, `ads`.
-- `makePolishedError()` returns error payloads via `jsonResponse()` and includes any `extra` fields passed.
 - Base URL used in examples: https://capi.capysploit.workers.dev/
+- Dynamic values use placeholders like `<timestamp>`, `<service>`, `<tip>`, `<ad>`, `<number>`, `<string>`, `<bool>`, or `<object>`.
+- `jsonResponse()` injects metadata after the payload body: `timestamp`, `service`, `version`, `tips`, `ads`.
+- `makePolishedError()` returns `error`, `message`, optional `hint`, then any extra fields, followed by the injected metadata.
+- `structuredResponse()` preserves the same contract and uses a `data` field when the route returns a payload object or array.
 
 ---
 
 ## Root status payload
-Request: GET /
 
-Response (200):
+Request:
+
+```http
+GET /
+```
+
+Response: 200
 
 ```json
 {
@@ -29,7 +35,15 @@ Response (200):
     "admin": "/admin/<action>",
     "lookup": "/lookup/<type>"
   },
-  "available_actions": ["view_profile","view_plan","attack","view_ongoing","network_statistics","list_methods","syntax_check"],
+  "available_actions": [
+    "view_profile",
+    "view_plan",
+    "attack",
+    "view_ongoing",
+    "network_statistics",
+    "list_methods",
+    "syntax_check"
+  ],
   "tips": "<tip>",
   "ads": "<ad>"
 }
@@ -37,10 +51,11 @@ Response (200):
 
 ---
 
-## Generic 404 (route not found)
-Returned by `routeNotFound()` when an unknown path is requested.
+## Generic 404 response
 
-Response (404):
+Returned by `routeNotFound()` for unknown paths.
+
+Response: 404
 
 ```json
 {
@@ -57,47 +72,47 @@ Response (404):
 
 ---
 
-# /api endpoints
+# /api routes
 
-All responses below include the injected `timestamp`, `service`, `version`, `tips`, and `ads` fields unless noted otherwise.
+## GET /api/network_statistics
 
-### GET /api/network_statistics
-Response (200):
+Response: 200
 
 ```json
 {
   "error": false,
-  "online_users_count": 1,
-  "total_users_count": <number>,
-  "active_users_count": <number>,
-  "vip_users_count": <number>,
-  "holder_users_count": <number>,
-  "reseller_users_count": <number>,
-  "suspended_users_count": <number>,
-  "at_risk_users_count": <number>,
-  "expired_users_count": 0,
-  "attacks_are_enabled": true,
-  "total_ongoing_attacks": <number>,
-  "total_attacks_today": <number>,
-  "total_warning_count": <number>,
-  "warning_limit": 5,
-  "verified_discord_users_count": <number>,
-  "pending_discord_links_count": <number>,
-  "max_attack_api_slots": <number>,
-  "health_status": "<stable|degraded>",
-  "maintenance_mode": false,
-  "src_name": "CAPI",
-  "src_uptime": "up",
+  "message": "Network statistics retrieved successfully.",
+  "data": {
+    "online_users_count": <number>,
+    "total_users_count": <number>,
+    "active_users_count": <number>,
+    "vip_users_count": <number>,
+    "holder_users_count": <number>,
+    "reseller_users_count": <number>,
+    "suspended_users_count": <number>,
+    "expired_users_count": 0,
+    "attacks_are_enabled": <bool>,
+    "total_ongoing_attacks": <number>,
+    "total_attacks_today": <number>,
+    "total_warning_count": <number>,
+    "verified_discord_users_count": <number>,
+    "max_attack_api_slots": <number>,
+    "health_status": "<stable|degraded>",
+    "maintenance_mode": <bool>,
+    "src_name": "CAPI",
+    "src_uptime": "<up|unknown>"
+  },
   "timestamp": "<timestamp>",
-  "service": "<service>",
+  "service": "CAPI",
   "version": "1.0.0",
   "tips": "<tip>",
   "ads": "<ad>"
 }
 ```
 
-### GET /api/graph
-Response (200):
+## GET /api/graph
+
+Response: 200
 
 ```json
 {
@@ -105,31 +120,66 @@ Response (200):
   "message": "graph stats loaded",
   "data": {
     "max_attack_api_slots": <number>,
-    "api_slots": { "total": <n>, "used": <n>, "available": <n>, "percent": "<nn.nn>", "bar": "<slot bar>" },
-    "c2_slots": { "active_attacks": <n>, "bar": "<slot bar>" },
-    "method_slots": [ /* { method, total, used, percent, bar } */ ],
-    "plan_method_access": { "free": [], "vip": [], "holder": [], "vip_or_holder": [] },
-    "maintenance": { "enabled": <bool>, "last_maintenance": "<timestamp|null>" },
+    "api_slots": {
+      "total": <number>,
+      "used": <number>,
+      "available": <number>,
+      "percent": "<nn.nn>",
+      "bar": "<slot bar>"
+    },
+    "c2_slots": {
+      "active_attacks": <number>,
+      "bar": "<slot bar>"
+    },
+    "method_slots": [
+      {
+        "method": "<method>",
+        "total": <number>,
+        "used": <number>,
+        "percent": <number>,
+        "bar": "<slot bar>"
+      }
+    ],
+    "plan_method_access": {
+      "free": ["<method>"],
+      "vip": ["<method>"],
+      "holder": ["<method>"],
+      "vip_or_holder": ["<method>"]
+    },
+    "maintenance": {
+      "enabled": <bool>,
+      "last_maintenance": "<timestamp|null>"
+    },
     "uptime": "<human readable>",
     "updated_at": "<timestamp>"
   },
   "timestamp": "<timestamp>",
-  "service": "<service>",
+  "service": "CAPI",
   "version": "1.0.0",
   "tips": "<tip>",
   "ads": "<ad>"
 }
 ```
 
-### GET /api/methods
-Response (200) via `structuredResponse`:
+## GET /api/methods
+
+Response: 200
 
 ```json
 {
   "error": false,
   "message": "public methods loaded",
   "data": [
-    { "id": <number|null>, "name": "udp", "description": "...", "target_type": "ip", "default_port": <number|null>, "min_time": <number|null>, "max_time": <number|null>, "max_concurrents": <number|null>, "max_slots": <number|null> }
+    {
+      "id": <number|null>,
+      "name": "<method>",
+      "description": "<description>",
+      "target_type": "<ip|url>",
+      "default_port": <number|null>,
+      "max_time": <number|null>,
+      "max_concurrents": <number|null>,
+      "max_slots": <number|null>
+    }
   ],
   "timestamp": "<timestamp>",
   "service": "CAPI",
@@ -139,9 +189,9 @@ Response (200) via `structuredResponse`:
 }
 ```
 
-### GET /api/discord_profile?discord_user_id=<id>
-Errors:
-- Missing `discord_user_id` (400 via `makePolishedError`):
+## GET /api/discord_profile?discord_user_id=<id>
+
+Missing parameter example: 400
 
 ```json
 {
@@ -156,7 +206,7 @@ Errors:
 }
 ```
 
-- Account not linked (404):
+Not linked example: 404
 
 ```json
 {
@@ -171,7 +221,7 @@ Errors:
 }
 ```
 
-Success (200):
+Success example: 200
 
 ```json
 {
@@ -190,8 +240,8 @@ Success (200):
     "max_concurrents": <number>,
     "max_daily_attacks": <number>,
     "suspended": <bool>,
-    "suspend_reason": <string|null>,
-    "suspended_by": <string|null>,
+    "suspend_reason": "<string|null>",
+    "suspended_by": "<string|null>",
     "service_name": "<service>",
     "resellers_service": <bool>,
     "expiry_unix": <number>,
@@ -203,25 +253,40 @@ Success (200):
     "mfa_enabled": <bool>,
     "account_status": "<suspended|at_limit|active>",
     "warnings": <number>,
-    "discord_link": { /* discord link status object */ }
+    "discord_link": {
+      "discord_user_id": "<id>",
+      "discord_username": "<name>",
+      "verified_at": "<ISO>",
+      "status": "<verified|pending>"
+    }
   },
-  "service": "<serviceName>",
   "timestamp": "<timestamp>",
+  "service": "CAPI",
   "version": "1.0.0",
   "tips": "<tip>",
   "ads": "<ad>"
 }
 ```
 
-### GET /api/verify?username=&password=&client=discord
-Errors (examples):
-- Missing params → 400 via `makePolishedError`.
-- User not exist → 404 JSON: `{ "error": true, "message": "user does not exist", "client": "<client>", "code": null, ... }`.
-- Wrong password → 401 JSON: `{ "error": true, "message": "wrong password", "client": "<client>", "code": null, ... }`.
-- Suspended → 403 JSON: `{ "error": true, "message": "account suspended", "client": "<client>", "code": null, ... }`.
-- API disabled → 403 JSON: `{ "error": true, "message": "api access disabled", "client": "<client>", "code": null, ... }`.
+## GET /api/verify?username=<user>&password=<pass>&client=discord
 
-User already verified (409):
+One of the common error shapes is:
+
+```json
+{
+  "error": true,
+  "message": "wrong password",
+  "client": "discord",
+  "code": null,
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+Already verified example: 409
 
 ```json
 {
@@ -242,7 +307,7 @@ User already verified (409):
 }
 ```
 
-Success (200):
+Success example: 200
 
 ```json
 {
@@ -259,17 +324,9 @@ Success (200):
 }
 ```
 
-### GET /api/link?code=&discord_user_id=&discord_username=
-Errors (examples):
-- Missing code or id → 400 via `makePolishedError`.
-- Discord already linked → 409 JSON with `error: true` and `discord_link` info.
-- Invalid/unknown code → 404.
-- Client mismatch → 400.
-- Code already used → 409.
-- Code expired → 410.
-- User already linked (username collision) → 409 with `discord_link` info.
+## GET /api/link?code=<code>&discord_user_id=<id>&discord_username=<name>
 
-Success (200):
+Success example: 200
 
 ```json
 {
@@ -279,7 +336,9 @@ Success (200):
   "code": "<code>",
   "discord_user_id": "<id>",
   "username": "<linkedUsername>",
-  "roles": ["<role>"],
+  "roles": [
+    "<role>"
+  ],
   "plan_role": "<role>",
   "timestamp": "<timestamp>",
   "service": "CAPI",
@@ -289,12 +348,30 @@ Success (200):
 }
 ```
 
-### GET /api/unlink?discord_user_id=
-Errors: missing id → 400 via `makePolishedError`.
-Not linked → 404.
-Unlink failure → 500.
+Typical error example: 409
 
-Success (200):
+```json
+{
+  "error": true,
+  "message": "This Discord account is already linked. Use /unlink first, then run /link again with a new code.",
+  "client": "discord",
+  "code": null,
+  "discord_link": {
+    "username": "<username>",
+    "discord_user_id": "<id>",
+    "discord_username": "<name>"
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## GET /api/unlink?discord_user_id=<id>
+
+Success example: 200
 
 ```json
 {
@@ -312,8 +389,9 @@ Success (200):
 }
 ```
 
-### GET /api/view_profile?username=
-Response (200):
+## GET /api/view_profile?username=<user>
+
+Response: 200
 
 ```json
 {
@@ -332,24 +410,29 @@ Response (200):
     "max_concurrents": <number>,
     "max_daily_attacks": <number>,
     "suspended": <bool>,
-    "suspend_reason": <string|null>,
-    "suspended_by": <string|null>,
+    "suspend_reason": "<string|null>",
+    "suspended_by": "<string|null>",
     "service_name": "<service>",
     "resellers_service": <bool>,
     "account_status": "<suspended|at_limit|active>",
     "warnings": <number>,
-    "discord_link": { /* object */ }
+    "discord_link": {
+      "discord_user_id": "<id>",
+      "discord_username": "<name>",
+      "verified_at": "<ISO>"
+    }
   },
   "timestamp": "<timestamp>",
-  "service": "<serviceName>",
+  "service": "CAPI",
   "version": "1.0.0",
   "tips": "<tip>",
   "ads": "<ad>"
 }
 ```
 
-### GET /api/view_plan?username=&password=
-Response (200):
+## GET /api/view_plan?username=<user>&password=<pass>
+
+Response: 200
 
 ```json
 {
@@ -391,7 +474,8 @@ Response (200):
 }
 ```
 
-**Example:**
+Example real-world object:
+
 ```json
 {
   "error": false,
@@ -432,8 +516,9 @@ Response (200):
 }
 ```
 
-### GET /api/view_ongoing
-Response (200):
+## GET /api/view_ongoing
+
+Response: 200
 
 ```json
 {
@@ -448,15 +533,18 @@ Response (200):
 }
 ```
 
-### GET /api/attack (very detailed)
-Common error responses use `makePolishedError()` and look like this (example):
+## GET /api/attack
+
+Typical error example: 403 / 400 / 429
 
 ```json
 {
   "error": true,
   "message": "<error message>",
   "hint": "<hint text>",
-  /* optional extra fields passed by caller, e.g. suspended, warn_status, target, ... */
+  "target": "<target>",
+  "warn_status": "<n>/5",
+  "suspended": <bool>,
   "timestamp": "<timestamp>",
   "service": "CAPI",
   "version": "1.0.0",
@@ -465,7 +553,7 @@ Common error responses use `makePolishedError()` and look like this (example):
 }
 ```
 
-Blacklisted target example (403):
+Blacklisted target example: 403
 
 ```json
 {
@@ -486,7 +574,7 @@ Blacklisted target example (403):
 }
 ```
 
-Success (200):
+Success example: 200
 
 ```json
 {
@@ -500,7 +588,7 @@ Success (200):
     "Len": "1",
     "Threads": <number>,
     "RPS": <number>,
-    "Geo": <value|null>,
+    "Geo": "<value|null>",
     "target_asn": "<asn/org|null>",
     "target_city": "<city|null>",
     "target_country": "<country|null>",
@@ -528,15 +616,16 @@ Success (200):
     "service_name": "<serviceName>"
   },
   "timestamp": "<timestamp>",
-  "service": "<serviceName>",
+  "service": "CAPI",
   "version": "1.0.0",
   "tips": "<tip>",
   "ads": "<ad>"
 }
 ```
 
-### GET /api/stop
-Response (200):
+## GET /api/stop
+
+Response: 200
 
 ```json
 {
@@ -552,18 +641,19 @@ Response (200):
 
 ---
 
-# /admin endpoints
+# /admin routes
 
-All admin responses below include the usual meta fields. Admin routes require `username` and `password` (checked by `requireAdminCredentials()`), which return `makePolishedError()` on failure (401).
+## GET /admin/add_user
 
-### GET /admin/add_user
-Success (200):
+Success example: 200
 
 ```json
 {
   "error": false,
   "message": "user added",
-  "user": { "username": "<username_to_add>" },
+  "user": {
+    "username": "<username_to_add>"
+  },
   "timestamp": "<timestamp>",
   "service": "CAPI",
   "version": "1.0.0",
@@ -572,8 +662,9 @@ Success (200):
 }
 ```
 
-### GET /admin/edit_user
-Success (200):
+## GET /admin/edit_user
+
+Success example: 200
 
 ```json
 {
@@ -587,21 +678,14 @@ Success (200):
 }
 ```
 
-### GET /admin/delete_user
-Success (200):
+## GET /admin/delete_user
 
-```json
-{ "error": false, "message": "user removed", "timestamp": "<timestamp>", "service": "CAPI", "version": "1.0.0", "tips": "<tip>", "ads": "<ad>" }
-```
-
-### GET /admin/view_user_logs
-Response (200) via `structuredResponse`:
+Success example: 200
 
 ```json
 {
   "error": false,
-  "message": "user logs loaded",
-  "data": { "user": "<username>", "logs": [ /* rows */ ] },
+  "message": "user removed",
   "timestamp": "<timestamp>",
   "service": "CAPI",
   "version": "1.0.0",
@@ -610,8 +694,36 @@ Response (200) via `structuredResponse`:
 }
 ```
 
-### GET /admin/view_user_plan
-Response (200):
+## GET /admin/view_user_logs
+
+Response: 200
+
+```json
+{
+  "error": false,
+  "message": "User logs retrieved successfully.",
+  "data": {
+    "attack_logs": [
+      {
+        "id": <number>,
+        "username": "<username>",
+        "method": "<method>",
+        "target": "<target>",
+        "created_at": "<ISO>"
+      }
+    ]
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## GET /admin/view_user_plan
+
+Response: 200
 
 ```json
 {
@@ -619,47 +731,58 @@ Response (200):
   "message": "User plan retrieved successfully.",
   "data": {
     "username": "<username>",
+    "password": "<password|null>",
     "admin": <bool>,
     "vip": <bool>,
     "holder": <bool>,
     "reseller": <bool>,
     "owner": <bool>,
     "api": <bool>,
+    "plan_id": <number|null>,
     "max_time": <number>,
-    "min_time": <number>,
     "cooldown": <number>,
-    "concurrents": <number>,
+    "max_concurrents": <number>,
     "max_daily_attacks": <number>,
+    "attacks_today": <number>,
     "attacks_remaining": <number>,
-    "powersaving": <bool>,
+    "ongoing_attacks": <number>,
+    "power_saving": <bool>,
+    "bypass_power": <bool>,
     "bypass_anti_spam": <bool>,
     "bypass_blacklist": <bool>,
+    "raw_access": <bool>,
+    "star_access": <bool>,
+    "botnet_access": <bool>,
+    "private_access": <bool>,
     "suspended": <bool>,
     "created_by": "<creator|null>",
-    "creation_date": "<YYYY-MM-DD HH:MM:SS|null>",
-    "expiry_unix": <number>,
-    "formatted_expiry": "<DD-MM-YYYY HH:MM:SS|null>",
-    "service_name": "<service>",
-    "warnings": <number>,
+    "created_at": "<ISO>",
+    "expiry_date": "<ISO|Lifetime>",
     "plan_type": "<VIP|Holder|Reseller|Admin|Free>",
     "rank": "<rank_label>",
-    "discord_linked": "<discord_user_id>|null"
+    "discord_linked": "<discord_user_id>|null",
+    "discord_username": "<discord_username>|null",
+    "discord_linked_at": "<ISO|null>",
+    "last_attack_time": "<ISO|null>",
+    "last_request_time": "<ISO>",
+    "last_ip": "<ip|null>"
   },
-  "service": "<serviceName>",
   "timestamp": "<timestamp>",
+  "service": "<serviceName>",
   "version": "1.0.0",
   "tips": "<tip>",
   "ads": "<ad>"
 }
 ```
 
-### GET /admin/unlink_discord
-Success (200):
+## GET /admin/unlink_discord
+
+Success example: 200
 
 ```json
 {
   "error": false,
-  "message": "discord link removed",
+  "message": "Discord account has been unlinked from user '<username>'.",
   "user": "<username>",
   "discord_user_id": "<id>",
   "discord_username": "<name>",
@@ -672,53 +795,36 @@ Success (200):
 }
 ```
 
-### GET /admin/view_all_logs
-Response (200): `structuredResponse` with `data.logs` array.
+## GET /admin/view_all_logs
 
-### GET /admin/view_all_users
-Response (200): `structuredResponse` with `data.users` array.
-
-### GET /admin/syntax_check
-- On success:
-
-```json
-{ "error": false, "message": "syntax check passed", "data": { "valid": true, "file": "inline.js" }, "timestamp": "<timestamp>", "service": "CAPI", "version": "1.0.0", "tips": "<tip>", "ads": "<ad>" }
-```
-
-- On failure: `structuredResponse` with `error: true`, `message: 'syntax check failed'`, `status:400`, and `extra.debug` containing the syntax result.
-
-### GET /admin/list_methods
-Response (200): `structuredResponse` with `data.methods` array of method objects.
-
-### GET /admin/add_blacklist
-Success (200): `{ "error": false, "message": "target blacklisted" }`.
-
-### GET /admin/list_blacklist
-Response (200): `structuredResponse` with `data.blacklist`.
-
-### GET /admin/remove_blacklist
-Success (200): `{ "error": false, "message": "blacklist entry removed" }`.
-
-### GET /admin/suspend_user
-Success (200): `{ "error": false, "message": "user suspended", "user": "<username>", "suspended_by": "<admin>", "suspend_reason": "<reason>" }`.
-
-### GET /admin/unsuspend_user
-Success (200): `{ "error": false, "message": "user unsuspended", "user": "<username>" }`.
-
----
-
-# /lookup endpoints
-
-### GET /lookup/lookup_fivem?cfx_code=
-- Missing code → 400: `{ "error": true, "message": "missing cfx_code", ... }`.
-- Not found → 404: `{ "error": true, "message": "cfx server not found", ... }`.
-- Success (200):
+Response: 200
 
 ```json
 {
   "error": false,
-  "server": { /* upstream FiveM server JSON */ },
-  "ip_info": { /* ip-api result or null */ },
+  "message": "System logs retrieved (N of M entries).",
+  "data": {
+    "logs": [
+      {
+        "id": <number>,
+        "event": "<event>",
+        "username": "<username>",
+        "details": {
+          "source": "<source>"
+        },
+        "created_at": "<ISO>"
+      }
+    ],
+    "pagination": {
+      "total": <number>,
+      "limit": <number>,
+      "offset": <number>,
+      "page": <number>,
+      "pages": <number>,
+      "has_next": <bool>,
+      "has_prev": <bool>
+    }
+  },
   "timestamp": "<timestamp>",
   "service": "CAPI",
   "version": "1.0.0",
@@ -727,36 +833,368 @@ Success (200): `{ "error": false, "message": "user unsuspended", "user": "<usern
 }
 ```
 
-### GET /lookup/lookup_mc?server_address=
-- Missing server_address → 400.
-- Lookup failed → 404.
-- Success (200): `{ "error": false, "server": <normalized server>, "ip_info": <ip-api|null>, ... }`.
+## GET /admin/view_all_users
 
-### GET /lookup/lookup_ip?ip=
-- Missing target → 400.
-- Lookup failed → 404.
-- Success (200):
+Response: 200
 
 ```json
-{ "error": false, "server": { "target": "<target>" }, "ip_info": <ip-api-result>, "timestamp": "<timestamp>", "service": "CAPI", "version": "1.0.0", "tips": "<tip>", "ads": "<ad>" }
+{
+  "error": false,
+  "message": "System users retrieved (N of M users).",
+  "data": [
+    {
+      "username": "<username>",
+      "admin": <bool>,
+      "vip": <bool>,
+      "holder": <bool>,
+      "reseller": <bool>,
+      "suspended": <bool>,
+      "api": <bool>,
+      "created_at": "<ISO>",
+      "last_ip": "<ip|null>"
+    }
+  ],
+  "pagination": {
+    "total": <number>,
+    "limit": <number>,
+    "offset": <number>,
+    "page": <number>,
+    "pages": <number>,
+    "has_next": <bool>,
+    "has_prev": <bool>
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## GET /admin/syntax_check
+
+Success example: 200
+
+```json
+{
+  "error": false,
+  "message": "Code syntax is valid and error-free.",
+  "data": {
+    "valid": true,
+    "file": "inline.js"
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+Failure example: 400
+
+```json
+{
+  "error": true,
+  "message": "Code syntax validation failed.",
+  "debug": {
+    "valid": false,
+    "file": "inline.js",
+    "name": "SyntaxError",
+    "message": "Unexpected closing token }"
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## GET /admin/list_methods
+
+Response: 200
+
+```json
+{
+  "error": false,
+  "message": "Attack methods retrieved (N of M methods).",
+  "data": {
+    "methods": [
+      {
+        "id": <number>,
+        "name": "<method>",
+        "description": "<description>",
+        "created_at": "<ISO>",
+        "enabled": <bool>,
+        "target_type": "<ip|url>",
+        "default_port": <number|null>,
+        "max_time": <number|null>,
+        "max_concurrents": <number|null>,
+        "max_slots": <number|null>,
+        "api_links": []
+      }
+    ],
+    "pagination": {
+      "total": <number>,
+      "limit": <number>,
+      "offset": <number>,
+      "page": <number>,
+      "pages": <number>,
+      "has_next": <bool>,
+      "has_prev": <bool>
+    }
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## GET /admin/add_blacklist
+
+Success example: 200
+
+```json
+{
+  "error": false,
+  "message": "Target '<target>' has been added to the blacklist.",
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## GET /admin/list_blacklist
+
+Response: 200
+
+```json
+{
+  "error": false,
+  "message": "Blacklist entries retrieved (N of M entries).",
+  "data": {
+    "blacklist": [
+      {
+        "id": <number>,
+        "target": "<target>",
+        "reason": "<reason>",
+        "created_at": "<ISO>"
+      }
+    ],
+    "pagination": {
+      "total": <number>,
+      "limit": <number>,
+      "offset": <number>,
+      "page": <number>,
+      "pages": <number>,
+      "has_next": <bool>,
+      "has_prev": <bool>
+    }
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## GET /admin/remove_blacklist
+
+Success example: 200
+
+```json
+{
+  "error": false,
+  "message": "blacklist entry removed",
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## GET /admin/suspend_user
+
+Success example: 200
+
+```json
+{
+  "error": false,
+  "message": "user suspended",
+  "user": "<username>",
+  "suspended_by": "<admin>",
+  "suspend_reason": "<reason>",
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## GET /admin/unsuspend_user
+
+Success example: 200
+
+```json
+{
+  "error": false,
+  "message": "user unsuspended",
+  "user": "<username>",
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
 ```
 
 ---
 
-# Discord endpoints (interactions)
+# /lookup routes
 
-### POST /discord/register
-- On missing credentials (env vars) returns `makePolishedError()` via `jsonResponse()`.
-- On success returns:
+## GET /lookup/lookup_fivem?cfx_code=<code>
+
+Success example: 200
 
 ```json
-{ "error": false, "message": "Discord command registered successfully", "command": <discord-api-response-object>, "timestamp": "<timestamp>", "service": "CAPI", "version": "1.0.0", "tips": "<tip>", "ads": "<ad>" }
+{
+  "error": false,
+  "server": {
+    "name": "<server_name>",
+    "ip": "<ip>",
+    "port": <number>
+  },
+  "ip_info": {
+    "country": "<country>",
+    "city": "<city>",
+    "org": "<org>"
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
 ```
 
-### POST /discord or /interactions (handleDiscordInteraction)
-- Signature/timestamp missing or invalid → `makePolishedError()` 401-ish via `jsonResponse()`.
-- For ping (payload.type === 1) returns the interaction acknowledgement (not JSONResponse helper — it's direct Response for Discord): a Response with body `{ "type": 1 }` or similar handled in code.
-- For supported command responses, the handler returns Discord interaction response payloads via `buildInteractionResponse()` (not the `jsonResponse()` meta-injected shape). Example: `type: 4, data: { content: "..." }` with Response status 200 and Content-Type `application/json`.
+## GET /lookup/lookup_mc?server_address=<address>
+
+Success example: 200
+
+```json
+{
+  "error": false,
+  "server": {
+    "address": "<server_address>",
+    "status": "online",
+    "players": <number>
+  },
+  "ip_info": {
+    "country": "<country>",
+    "city": "<city>",
+    "org": "<org>"
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## GET /lookup/lookup_ip?ip=<ip>
+
+Success example: 200
+
+```json
+{
+  "error": false,
+  "server": {
+    "target": "<target>"
+  },
+  "ip_info": {
+    "query": "<ip>",
+    "status": "success",
+    "country": "<country>",
+    "city": "<city>",
+    "org": "<org>"
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+---
+
+# Discord interaction endpoints
+
+## POST /discord/register
+
+Success example: 200
+
+```json
+{
+  "error": false,
+  "message": "Discord command registered successfully",
+  "command": {
+    "id": "<discord_command_id>",
+    "application_id": "<app_id>",
+    "name": "<command_name>",
+    "description": "<description>"
+  },
+  "timestamp": "<timestamp>",
+  "service": "CAPI",
+  "version": "1.0.0",
+  "tips": "<tip>",
+  "ads": "<ad>"
+}
+```
+
+## POST /discord or /interactions
+
+Discord interaction responses are not returned by `jsonResponse()`; they are ack payloads for Discord's API.
+
+Ping response example:
+
+```json
+{
+  "type": 1
+}
+```
+
+Command response example:
+
+```json
+{
+  "type": 4,
+  "data": {
+    "content": "<response text>"
+  }
+}
+```
+
+---
+
+## Response contract rules
+
+- Success payloads follow the order: `error`, `message`, `data`, then metadata: `timestamp`, `service`, `version`, `tips`, `ads`.
+- Errors follow the order: `error`, `message`, optional `hint`, then extra fields, then metadata: `timestamp`, `service`, `version`, `tips`, `ads`.
+- `makePolishedError()` strips redundant auth counters like `attempts` and `limit` from the final payload.
+- `jsonResponse()` adds metadata automatically, so route handlers only need to return the meaningful body.
+- `structuredResponse()` keeps the same contract while returning nested data objects and arrays.
+
+This file is the current contract reference for the project. Any changes to the runtime payload shape should be mirrored here so the docs stay 1:1 with the actual service responses.
 
 ---
 
