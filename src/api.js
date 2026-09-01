@@ -172,6 +172,17 @@ export function normalizeProfilePayload(payload = {}) {
 
   const flat = { ...(payload.profile && typeof payload.profile === 'object' ? payload.profile : {}), ...payload };
   delete flat.profile;
+
+  delete flat.service_name;
+  delete flat.serviceName;
+  delete flat.expiry_unix;
+  delete flat.formatted_expiry;
+
+  if (!('expiry_date' in flat) || flat.expiry_date === undefined || flat.expiry_date === null || flat.expiry_date === '') {
+    const expiryValue = Number(payload.expiry_unix ?? flat.expiry_unix ?? 0);
+    flat.expiry_date = Number.isFinite(expiryValue) && expiryValue > 0 ? new Date(expiryValue * 1000).toISOString() : 'Lifetime';
+  }
+
   return flat;
 }
 
@@ -573,7 +584,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       suspended: Boolean(user.suspended),
       suspend_reason: user.suspend_reason || null,
       suspended_by: user.suspended_by || null,
-      service_name: serviceName,
       resellers_service: Boolean(user.created_by && user.created_by !== user.username),
       expiry_unix: Number(user.expiry_unix || 0),
       is_banned: Boolean(user.suspended),
@@ -586,6 +596,12 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       warnings: Number(warningSummary.count || 0),
       discord_link: discordLink
     });
+
+    if (!('raw_access' in profilePayload)) profilePayload.raw_access = Boolean(user.raw_access || false);
+    if (!('star_access' in profilePayload)) profilePayload.star_access = Boolean(user.star_access || false);
+    if (!('botnet_access' in profilePayload)) profilePayload.botnet_access = Boolean(user.botnet_access || false);
+    if (!('private_access' in profilePayload)) profilePayload.private_access = Boolean(user.private_access || false);
+
     return jsonResponse({
       error: false,
       message: resolveApiMessage('discord_profile_loaded', 'discord profile loaded'),
@@ -732,7 +748,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     
     // Format dates
     const createdAt = u.created_at ? new Date(u.created_at).toISOString().replace('T', ' ').substring(0, 19) : null;
-    const expiryDate = u.expiry_unix && u.expiry_unix > 0 ? new Date(u.expiry_unix * 1000).toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\//g, '-') : 'Lifetime';
+    const expiryDate = u.expiry_unix && u.expiry_unix > 0 ? new Date(u.expiry_unix * 1000).toISOString() : 'Lifetime';
     
     const responsePayload = {
       error: false,
@@ -752,18 +768,21 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         max_daily_attacks: Number(u.max_daily_attacks || 100),
         attacks_remaining: attacksRemaining,
         powersaving: isPowerSavingEnabled(u.power_saving),
+        bypass_power: !isPowerSavingEnabled(u.power_saving),
         bypass_anti_spam: Boolean(u.bypass_anti_spam || false),
         bypass_blacklist: Boolean(u.bypass_blacklist || false),
+        raw_access: Boolean(planSettings?.raw_access ?? u.raw_access ?? false),
+        star_access: Boolean(planSettings?.star_access ?? u.star_access ?? false),
+        botnet_access: Boolean(planSettings?.botnet_access ?? u.botnet_access ?? false),
+        private_access: Boolean(planSettings?.private_access ?? u.private_access ?? false),
         suspended: Boolean(u.suspended),
         created_by: u.created_by || null,
         creation_date: createdAt,
-        expiry_unix: Number(u.expiry_unix || 0),
-        formatted_expiry: expiryDate,
-        service_name: serviceName,
+        expiry_date: expiryDate,
         warnings: Number((await Vault.getUserWarningSummary(env, u.username)).count || 0),
+        discord_linked: discordLink ? discordLink.discord_user_id : null,
         plan_type: planType,
-        rank: rank,
-        discord_linked: discordLink ? discordLink.discord_user_id : null
+        rank: rank
       }
     };
 

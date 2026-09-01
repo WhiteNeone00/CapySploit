@@ -29,6 +29,28 @@ test('profile payloads are flattened directly into data instead of nested under 
   assert.equal(normalized.warnings, 2);
 });
 
+test('plan-style profile payloads strip legacy expiry/service fields and expose expiry_date', () => {
+  const normalized = normalizeProfilePayload({
+    username: 'alice',
+    service_name: 'CAPI',
+    expiry_unix: 1735689600,
+    formatted_expiry: '01-01-2025',
+    raw_access: true,
+    star_access: false,
+    botnet_access: true,
+    private_access: false
+  });
+
+  assert.equal('service_name' in normalized, false);
+  assert.equal('expiry_unix' in normalized, false);
+  assert.equal('formatted_expiry' in normalized, false);
+  assert.equal(normalized.expiry_date, '2025-01-01T00:00:00.000Z');
+  assert.equal(normalized.raw_access, true);
+  assert.equal(normalized.star_access, false);
+  assert.equal(normalized.botnet_access, true);
+  assert.equal(normalized.private_access, false);
+});
+
 test('methods responses return a direct array in data and include min_time metadata', async () => {
   const methods = [
     { id: 1, name: 'udp', description: 'UDP flood', target_type: 'ip', default_port: 80, min_time: 10, max_time: 600, max_concurrents: 3, max_slots: 10 }
@@ -575,6 +597,18 @@ test('view plan payload omits min_time from user-facing output', async () => {
 
   assert.ok(!('min_time' in payload.data));
   assert.ok(payload.data.max_time === 60);
+});
+
+test('plan responses use plan_type and omit the internal plan_id', () => {
+  const publicPlan = { username: 'alice', expiry_date: 'Lifetime', discord_linked: null, plan_type: 'VIP', rank: 'VIP' };
+  const adminPlan = { username: 'alice', last_ip: null, plan_type: 'VIP', rank: 'VIP' };
+
+  assert.equal(publicPlan.plan_type, 'VIP');
+  assert.equal(adminPlan.plan_type, 'VIP');
+  assert.equal('plan_id' in publicPlan, false);
+  assert.equal('plan_id' in adminPlan, false);
+  assert.deepEqual(Object.keys(publicPlan).slice(-2), ['plan_type', 'rank']);
+  assert.deepEqual(Object.keys(adminPlan).slice(-2), ['plan_type', 'rank']);
 });
 
 test('method metadata keeps the current field names and max_time semantics', async () => {

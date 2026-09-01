@@ -548,7 +548,6 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
         reseller: Boolean(u.reseller),
         owner: Boolean(u.owner || false),
         api: Boolean(u.api ?? u.api_access),
-        plan_id: planSettings?.plan_id ?? u.plan_id ?? null,
         max_time: Number(u.max_time || 60),
         cooldown: Number(u.cooldown || 10),
         max_concurrents: Number(u.max_concurrents || 1),
@@ -575,7 +574,9 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
         discord_linked_at: discordLinkTime,
         last_attack_time: lastAttackIso,
         last_request_time: u.last_request_time ? new Date(u.last_request_time).toISOString() : new Date().toISOString(),
-        last_ip: u.last_ip || null
+        last_ip: u.last_ip || null,
+        plan_type: planType,
+        rank: rank
       }
     }, 200, { service: serviceName });
   }

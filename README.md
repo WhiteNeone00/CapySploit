@@ -19,7 +19,7 @@ In short: it is the API layer that powers the live service experience and expose
 CAPI is not just a static docs repo or a mock server. It is a working API that can:
 
 - validate users and manage access to protected endpoints
-- inspect and return user plan information such as cooldowns, limits, expiry, and ranking
+- inspect and return user plan information such as plan type, cooldowns, limits, expiry, access flags, and ranking
 - expose public operational stats like current attack load and system health
 - support Discord-based verification and account linking flows
 - manage attack lifecycle data and method metadata
@@ -117,7 +117,7 @@ npm run dev
 GET /
 ```
 
-Returns service metadata, health/status information, and the list of supported action groups.
+Returns service metadata, runtime status, and the list of supported action groups.
 
 ### Public API routes
 
@@ -196,9 +196,16 @@ The project follows one consistent JSON contract across most routes:
   "message": "User plan retrieved successfully.",
   "data": {
     "username": "alice",
+      "expiry_date": "Lifetime",
+      "raw_access": false,
+      "star_access": true,
+      "botnet_access": false,
+      "private_access": false,
+      "plan_type": "VIP",
+      "rank": "VIP",
     "admin": false,
-    "vip": true,
-    "holder": false
+      "vip": true,
+      "holder": false
   },
   "timestamp": "2026-08-29T16:13:55.223Z",
   "service": "CAPI",
@@ -223,7 +230,9 @@ This means the client can reliably parse JSON without dealing with mislabeled ne
 
 - `attempts` and `limit` are intentionally omitted from auth failures in the final response payload
 - nested wrappers such as `data.profile` are flattened when they are redundant
-- `view_plan` is the canonical plan response and is kept direct and compact
+- `view_plan` and `view_user_plan` use a flat `data` object; `plan_type` and `rank` are the final fields
+- plan responses use `expiry_date` and access flags such as `raw_access`, `star_access`, `botnet_access`, and `private_access`
+- `plan_id`, `expiry_unix`, `formatted_expiry`, and plan-level `service_name` are not returned
 
 ---
 
@@ -282,7 +291,7 @@ curl "https://your-capi-host/api/verify?username=alice&password=secret123&client
 - All response helpers are centralized for consistent payload ordering and metadata injection.
 - The system keeps rate limiting and cooldown logic in the shared helpers so routes behave similarly.
 - The codebase was written to keep the API contract stable for both frontend and Discord bot consumers.
-- For live API examples, see [API_ENDPOINTS.md](API_ENDPOINTS.md) and [API_RESPONSE.md](API_RESPONSE.md).
+- For live API examples, see [API_ENDPOINTS.md](docs/API_ENDPOINTS.md) and [API_RESPONSE.md](docs/API_RESPONSE.md).
 
 ---
 
