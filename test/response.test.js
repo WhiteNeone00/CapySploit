@@ -5,7 +5,7 @@ import { countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, re
 import { adminHandler, logAuditAction } from '../src/admin.js';
 import { getCachedSystemSetting, invalidateMethodCache, invalidateUserCache } from '../src/helpers.js';
 import { isMethodPermittedForUser } from '../src/policy.js';
-import { fanOutMethodApiLinks, formatOngoingAttackResponse, getSafeIpInfo, ipLookup, normalizeProfilePayload, resolveFastIpInfo } from '../src/api.js';
+import { fanOutMethodApiLinks, formatOngoingAttackResponse, getSafeIpInfo, ipLookup, normalizeProfilePayload, resolveFastIpInfo, resolveTargetGeoInfo } from '../src/api.js';
 import { buildDiscordWebhookPayload } from '../src/config.js';
 
 test('profile payloads are flattened directly into data instead of nested under profile', () => {
@@ -157,6 +157,29 @@ test('slow geolocation metadata does not block the attack response', async () =>
 
   assert.deepEqual(info, {});
   assert.ok(elapsed < 800, `expected fast fallback but took ${elapsed}ms`);
+
+  global.fetch = originalFetch;
+});
+
+test('geo lookups can wait briefly and then mark the response as failed without blocking the send', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ status: 'success', country: 'Japan', countryCode: 'JP', isp: 'Example ISP', org: 'Example Org' })
+    };
+  };
+
+  const before = Date.now();
+  const result = await resolveTargetGeoInfo('203.0.113.7', 1200);
+  const elapsed = Date.now() - before;
+
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(result.info, {});
+  assert.ok(elapsed >= 1100, `expected a 1-2s lookup wait but finished in ${elapsed}ms`);
+  assert.ok(elapsed < 1800, `expected the request to continue once timeout hit but took ${elapsed}ms`);
 
   global.fetch = originalFetch;
 });

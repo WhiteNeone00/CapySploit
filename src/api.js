@@ -88,6 +88,35 @@ export async function resolveFastIpInfo(target, timeoutMs = 400) {
   return {};
 }
 
+export async function resolveTargetGeoInfo(target, timeoutMs = 1500) {
+  const cleanTarget = String(target || '').trim();
+  if (!cleanTarget) {
+    return { status: 'failed', info: {}, elapsedMs: 0 };
+  }
+
+  const startedAt = performance.now();
+  const lookupPromise = lookupIpInfo(cleanTarget);
+  const result = await Promise.race([
+    lookupPromise.then((data) => ({
+      status: 'resolved',
+      info: getSafeIpInfo(data),
+      elapsedMs: performance.now() - startedAt
+    })),
+    new Promise((resolve) => setTimeout(() => resolve({
+      status: 'failed',
+      info: {},
+      elapsedMs: performance.now() - startedAt
+    }), timeoutMs))
+  ]);
+
+  if (result?.status === 'resolved') {
+    return { status: 'resolved', info: getSafeIpInfo(result.info), elapsedMs: Number(result.elapsedMs || 0) };
+  }
+
+  void lookupPromise.catch(() => {});
+  return { status: 'failed', info: {}, elapsedMs: Number(result?.elapsedMs || 0) };
+}
+
 function isPowerSavingEnabled(value) {
   if (value === undefined || value === null || value === '') return true;
   if (typeof value === 'string') {
@@ -1054,15 +1083,24 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (!policyResult.allowed) return makePolishedError(`method ${record.method} is blocked by policy (${policyResult.reason})`, 403, { hint: 'Upgrade the account plan or remove the policy restriction for this method.' });
 
     const payloadBlacklists = getPayloadBlacklists();
-    const [ipinfo, blacklistRows] = await Promise.all([
-      resolveFastIpInfo(record.target, 150),
+    const geoWaitMs = (() => {
+      const raw = Number(qv.geo_timeout ?? qv.geo_wait ?? qv.geo_wait_ms ?? 1500);
+      if (Number.isFinite(raw) && raw > 0) {
+        return Math.min(Math.max(raw, 1000), 2000);
+      }
+      return 1500;
+    })();
+    const geoPreference = String(qv.geo || '').trim().toLowerCase();
+    const geoDisabled = ['off', 'none', 'skip', 'false', '0', 'disabled'].includes(geoPreference);
+    const [geoLookup, blacklistRows] = await Promise.all([
+      geoDisabled ? { status: 'skipped', info: {} } : resolveTargetGeoInfo(record.target, geoWaitMs),
       Vault.listBlacklist(env)
     ]);
     const blacklistTargets = [
       ...(payloadBlacklists?.Blacklists_Targets || []),
       ...(blacklistRows || []).map(item => item.target)
     ];
-    const safeIpInfo = getSafeIpInfo(ipinfo);
+    const safeIpInfo = getSafeIpInfo(geoLookup?.info || {});
     const targetBlocked = isBlacklistedTarget(record.target, blacklistTargets)
       || isBlacklistedByMetadata(safeIpInfo, payloadBlacklists);
     if (targetBlocked) {
@@ -1164,12 +1202,18 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     void fanOutMethodApiLinks(methodMeta, record).catch(() => {});
 
     const attacks_remaining = Math.max(0, Number(user.max_daily_attacks || 0) - Number(todays || 0));
-    const attackEndTime = performance.now(); // End timing
-    const executionTime = attackEndTime - attackStartTime; // Calculate execution time
     const attackId = generateAttackId(); // Generate unique attack ID
     const powerSaving = isPowerSavingEnabled(user.power_saving);
     const bypassPower = !powerSaving;
-    
+    const responseGeo = (() => {
+      if (geoPreference && !geoDisabled) return geoPreference;
+      if (geoLookup?.status === 'resolved') return 'full';
+      if (geoLookup?.status === 'skipped') return 'skipped';
+      return 'failed';
+    })();
+    const attackEndTime = performance.now(); // End timing
+    const executionTime = attackEndTime - attackStartTime; // Calculate execution time
+
     const responseBody = {
       error: false,
       message: 'Attack request accepted and launched successfully.',
@@ -1182,7 +1226,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         len: Number(record.len),
         threads: Number(record.threads || 0),
         rps: Number(record.rps || 0),
-        geo: record.geo || 'full',
+        geo: responseGeo,
         ...(safeIpInfo.as || safeIpInfo.org ? { target_asn: safeIpInfo.as || safeIpInfo.org } : {}),
         ...(safeIpInfo.city ? { target_city: safeIpInfo.city } : {}),
         ...(safeIpInfo.country ? { target_country: safeIpInfo.country } : {}),
