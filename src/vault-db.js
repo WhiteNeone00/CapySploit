@@ -10,6 +10,17 @@ import {
 } from './helpers.js';
 
 const cleanupInFlight = new WeakMap();
+let responseSettingsReady = false;
+
+const RESPONSE_SETTINGS = [
+  { key: 'rate_limit_enabled', value: 'true', type: 'boolean', description: 'Enable global rate limiting' },
+  { key: 'response_include_hint', value: 'true', type: 'boolean', description: 'Include hint in non-admin API responses' },
+  { key: 'response_include_timestamp', value: 'true', type: 'boolean', description: 'Include timestamp in non-admin API responses' },
+  { key: 'response_include_service', value: 'true', type: 'boolean', description: 'Include service in non-admin API responses' },
+  { key: 'response_include_version', value: 'true', type: 'boolean', description: 'Include version in non-admin API responses' },
+  { key: 'response_include_ads', value: 'true', type: 'boolean', description: 'Include ads in non-admin API responses' },
+  { key: 'response_include_tips', value: 'false', type: 'boolean', description: 'Include tips in non-admin API responses' }
+];
 
 export function getDB(env) {
   return env && (env.capi_db || env.CAPI_DB || env.DB || env.CAPI_db);
@@ -45,23 +56,12 @@ async function ensureSystemSettings(env) {
   const DB = getDB(env);
   if (!DB) return;
   const defaults = [
+    { key: 'api_version', value: '1.0.0', type: 'string', description: 'API version' },
+    { key: 'service_name', value: 'CAPI', type: 'string', description: 'Public service name for API responses' },
     { key: 'maintenance_mode', value: 'false', type: 'boolean', description: 'API maintenance mode' },
     { key: 'attacks_disabled', value: 'false', type: 'boolean', description: 'Disable all attack requests globally' },
-    { key: 'rate_limit_enabled', value: 'true', type: 'boolean', description: 'Global rate limit toggle' },
-    { key: 'max_concurrent_attacks', value: '50', type: 'number', description: 'Max concurrent attacks globally' },
-    { key: 'max_user_concurrent_attacks', value: '3', type: 'number', description: 'Max concurrent attacks per user' },
-    { key: 'auto_cleanup_enabled', value: 'true', type: 'boolean', description: 'Enable automatic cleanup jobs' },
-    { key: 'auto_cleanup_interval_ms', value: '300000', type: 'number', description: 'Automatic cleanup interval in milliseconds' },
-    { key: 'default_user_plan', value: 'Default', type: 'string', description: 'Default user plan' },
-    { key: 'api_version', value: '1.0.0', type: 'string', description: 'API version' },
-    { key: 'default_max_time', value: '60', type: 'number', description: 'Default max attack time in seconds' },
-    { key: 'default_cooldown', value: '10', type: 'number', description: 'Default cooldown between attacks' },
-    { key: 'default_max_concurrents', value: '1', type: 'number', description: 'Default max concurrent attacks per user' },
-    { key: 'default_max_daily_attacks', value: '100', type: 'number', description: 'Default max attacks per day' },
-    { key: 'enable_power_saving', value: 'true', type: 'boolean', description: 'Enable power saving mode by default' },
-    { key: 'enable_anti_spam', value: 'true', type: 'boolean', description: 'Enable anti-spam protection by default' },
-    { key: 'enable_bypass_blacklist', value: 'false', type: 'boolean', description: 'Allow bypass of blacklist by default' },
-    { key: 'service_name', value: 'CAPI', type: 'string', description: 'Public service name for API responses' }
+    { key: 'rate_limit_enabled', value: 'true', type: 'boolean', description: 'Enable global rate limiting' },
+    { key: 'auto_cleanup_enabled', value: 'true', type: 'boolean', description: 'Enable automatic cleanup jobs' }
   ];
 
   for (const item of defaults) {
@@ -1395,14 +1395,15 @@ export async function initializeDatabase(env) {
 
     const settings = [
       { key: 'maintenance_mode', value: 'false', type: 'boolean', description: 'API maintenance mode' },
-      { key: 'rate_limit_enabled', value: 'true', type: 'boolean', description: 'Global rate limit toggle' },
-      { key: 'max_concurrent_attacks', value: '50', type: 'number', description: 'Max concurrent attacks globally' },
-      { key: 'max_user_concurrent_attacks', value: '3', type: 'number', description: 'Max concurrent attacks per user' },
       { key: 'auto_cleanup_enabled', value: 'true', type: 'boolean', description: 'Enable automatic cleanup jobs' },
-      { key: 'auto_cleanup_interval_ms', value: '300000', type: 'number', description: 'Automatic cleanup interval in milliseconds' },
-      { key: 'default_user_plan', value: 'Default', type: 'string', description: 'Default plan assigned to new users' },
       { key: 'api_version', value: '1.0.0', type: 'string', description: 'API version' },
-      { key: 'uptime_started_at', value: new Date().toISOString(), type: 'string', description: 'Service uptime start timestamp' }
+      { key: 'uptime_started_at', value: new Date().toISOString(), type: 'string', description: 'Service uptime start timestamp' },
+        { key: 'response_include_hint', value: 'true', type: 'boolean', description: 'Include hint in non-admin API responses' },
+      { key: 'response_include_timestamp', value: 'true', type: 'boolean', description: 'Include timestamp in non-admin API responses' },
+      { key: 'response_include_service', value: 'true', type: 'boolean', description: 'Include service in non-admin API responses' },
+      { key: 'response_include_version', value: 'true', type: 'boolean', description: 'Include version in non-admin API responses' },
+      { key: 'response_include_ads', value: 'true', type: 'boolean', description: 'Include ads in non-admin API responses' },
+      { key: 'response_include_tips', value: 'false', type: 'boolean', description: 'Include tips in non-admin API responses' }
     ];
 
     for (const item of settings) {
@@ -1413,6 +1414,24 @@ export async function initializeDatabase(env) {
     }
   } catch (error) {
     console.error('initializeDatabase error:', error.message);
+  }
+}
+
+export async function ensureResponseSettings(env) {
+  if (responseSettingsReady) return;
+  const DB = getDB(env);
+  if (!DB) return;
+
+  try {
+    for (const setting of RESPONSE_SETTINGS) {
+      const existing = await getSystemSetting(env, setting.key);
+      if (!existing) {
+        await setSystemSetting(env, setting.key, setting.value, setting.type, setting.description);
+      }
+    }
+    responseSettingsReady = true;
+  } catch (error) {
+    console.error('ensureResponseSettings error:', error.message);
   }
 }
 

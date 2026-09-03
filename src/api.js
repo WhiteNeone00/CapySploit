@@ -55,8 +55,8 @@ async function authenticateApiCredentials(qv, env, request) {
       ok: false,
       response: makePolishedError('invalid credentials', 401, {
         hint: attempts >= authStatus.limit
-          ? 'Account is now locked. Wait 15 minutes before trying again.'
-          : `${authStatus.limit - attempts} attempt${authStatus.limit - attempts !== 1 ? 's' : ''} remaining before account lock.`
+          ? 'Account is temporarily locked. Try again later.'
+          : 'The supplied username or password is incorrect.'
       })
     };
   }

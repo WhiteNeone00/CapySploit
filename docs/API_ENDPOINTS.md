@@ -8,6 +8,7 @@ Notes:
 - `jsonResponse()` injects metadata after the payload body: `timestamp`, `service`, `version`, `tips`, `ads`.
 - `makePolishedError()` returns `error`, `message`, optional `hint`, then any extra fields, followed by the injected metadata.
 - `structuredResponse()` preserves the same contract and uses a `data` field when the route returns a payload object or array.
+- Non-admin responses can disable `hint`, `timestamp`, `service`, `version`, `ads`, or `tips` independently through `/admin/response_settings`.
 
 ---
 
@@ -729,6 +730,33 @@ Response: 200
   "ads": "<ad>"
 }
 ```
+
+## GET /admin/response_settings?action=get
+
+Returns the current response-extra switches. This route requires admin authentication.
+
+```json
+{
+  "error": false,
+  "message": "Response settings retrieved successfully.",
+  "settings": {
+    "hint": "true",
+    "timestamp": "true",
+    "service": "true",
+    "version": "true",
+    "ads": "true",
+    "tips": "false"
+  }
+}
+```
+
+Disable or enable one extra at a time:
+
+```http
+GET /admin/response_settings?action=set&field=hint&enabled=false&username=<admin>&password=<pass>
+```
+
+Valid `field` values are `hint`, `timestamp`, `service`, `version`, `ads`, `tips`, and `rate_limit`. Response extras are stored as `response_include_<field>` in `system_settings`; `rate_limit` is stored as `rate_limit_enabled`. Response-extra settings apply to non-admin responses, while admin responses always retain their metadata and lockout hints.
 
 ## GET /admin/view_user_plan
 

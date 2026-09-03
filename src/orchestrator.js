@@ -59,6 +59,11 @@ function queueCleanupTask(task) {
   processCleanupQueue().catch(e => console.error('Cleanup queue error:', e));
 }
 
+function settingEnabled(value, fallback = true) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return !['false', '0', 'off', 'no'].includes(String(value).trim().toLowerCase());
+}
+
 export async function handleRequest(request, env, ctx = null) {
   // Generate unique request ID for tracking
   const requestId = generateRequestId();
@@ -97,7 +102,25 @@ export async function handleRequest(request, env, ctx = null) {
     const username = String(query.get('username') || '').trim();
     const sourceIp = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown';
 
-    if (RATE_LIMIT_CONFIG.ENABLED && RATE_LIMIT_CONFIG.PROTECTED_PREFIXES.some((prefix) => path.startsWith(prefix.replace(/^\//, '')))) {
+    // Load independent settings concurrently and cache them between requests.
+    const [maintenanceEnabled, serviceName, apiVersion, uptimeStartedAt, rateLimitEnabled, responseExtras] = await Promise.all([
+      Vault.getMaintenanceMode(env).then((enabled) => enabled ? 'true' : 'false'),
+      getCachedSystemSetting('service_name', async () => Vault.getServiceName(env)),
+      getCachedSystemSetting('api_version', async () => Vault.getApiVersion(env)),
+      getCachedSystemSetting('uptime_started_at', async () => Vault.getSettingOrDefault(env, 'uptime_started_at', new Date().toISOString())),
+      Vault.getSettingOrDefault(env, 'rate_limit_enabled', String(RATE_LIMIT_CONFIG.ENABLED)).then((value) => settingEnabled(value, RATE_LIMIT_CONFIG.ENABLED)),
+      Promise.all([
+        ['hint', true],
+        ['timestamp', true],
+        ['service', true],
+        ['version', true],
+        ['ads', true],
+        ['tips', false]
+      ].map(async ([name, fallback]) => [name, settingEnabled(await Vault.getSettingOrDefault(env, `response_include_${name}`, String(fallback)), fallback)]))
+        .then((entries) => Object.fromEntries(entries))
+    ]);
+
+    if (rateLimitEnabled && RATE_LIMIT_CONFIG.PROTECTED_PREFIXES.some((prefix) => path.startsWith(prefix.replace(/^\//, '')))) {
       const rateLimitKey = username ? `route:${username}` : `route:${sourceIp}`;
       const rateLimitCheck = checkApiRateLimit(rateLimitKey, RATE_LIMIT_CONFIG.WINDOW_SECONDS);
       if (!rateLimitCheck.allowed) {
@@ -107,14 +130,6 @@ export async function handleRequest(request, env, ctx = null) {
         }, 429, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME, version: env.API_VERSION || '1.0.0', requestId });
       }
     }
-
-    // Load independent settings concurrently and cache them between requests.
-    const [maintenanceEnabled, serviceName, apiVersion, uptimeStartedAt] = await Promise.all([
-      Vault.getMaintenanceMode(env).then((enabled) => enabled ? 'true' : 'false'),
-      getCachedSystemSetting('service_name', async () => Vault.getServiceName(env)),
-      getCachedSystemSetting('api_version', async () => Vault.getApiVersion(env)),
-      getCachedSystemSetting('uptime_started_at', async () => Vault.getSettingOrDefault(env, 'uptime_started_at', new Date().toISOString()))
-    ]);
     const isMaintenance = maintenanceEnabled === 'true';
     const uptimeStartedMs = Date.parse(uptimeStartedAt);
     const uptime = formatUptime(Number.isFinite(uptimeStartedMs) ? uptimeStartedMs : Date.now());
@@ -164,6 +179,8 @@ export async function handleRequest(request, env, ctx = null) {
         schemaReady = false;
       }
 
+
+    await Vault.ensureResponseSettings(env);
       if (!schemaReady) {
         initializationPromise ||= initializeAll(env);
         const currentInitialization = initializationPromise;
@@ -207,6 +224,18 @@ export async function handleRequest(request, env, ctx = null) {
     };
 
     const dispatchRequestLog = async (response, route) => {
+      if (route !== 'admin' && response?.clone) {
+        try {
+          const body = await response.clone().json();
+          for (const [key, enabled] of Object.entries(responseExtras)) {
+            if (!enabled) delete body[key];
+          }
+          const headers = new Headers(response.headers);
+          response = new Response(JSON.stringify(body, null, 2), { status: response.status, statusText: response.statusText, headers });
+        } catch (_) {
+          // Leave non-JSON responses untouched.
+        }
+      }
       const queryUsername = username || null;
       let errorMessage = null;
       if (response?.status >= 400 && response?.clone) {

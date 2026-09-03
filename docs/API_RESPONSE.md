@@ -2,6 +2,8 @@
 
 This document contains the real response contract for the CAPI service, including success and error payloads in pretty-printed JSON. The examples are written to match the live runtime behavior of the project and to be easy to inspect in documentation or debugging tools.
 
+Non-admin response extras are independently controlled by `response_include_hint`, `response_include_timestamp`, `response_include_service`, `response_include_version`, `response_include_ads`, and `response_include_tips` in `system_settings`. Admin responses retain these fields.
+
 ---
 
 ## Response conventions

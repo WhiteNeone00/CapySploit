@@ -567,8 +567,6 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
         created_by: u.created_by || null,
         created_at: createdAt,
         expiry_date: expiryDate,
-        plan_type: planType,
-        rank: rank,
         discord_linked: discordLink ? discordLink.discord_user_id : null,
         discord_username: discordLink?.discord_username || null,
         discord_linked_at: discordLinkTime,
@@ -1075,6 +1073,41 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     }
     
     return makePolishedError(resolveApiMessage('admin_unknown_action', 'unknown action'), 400, { hint: resolveApiHint('admin_unknown_action', 'Use ?action=get or ?action=set') });
+  }
+
+  if (endpoint === 'response_settings') {
+    const responseFields = ['hint', 'timestamp', 'service', 'version', 'ads', 'tips', 'rate_limit'];
+    const settingKey = (field) => field === 'rate_limit' ? 'rate_limit_enabled' : `response_include_${field}`;
+    const action = String(q.action || 'get').toLowerCase();
+    if (action === 'get') {
+      const entries = await Promise.all(responseFields.map(async (field) => [
+        field,
+        (await Vault.getSystemSetting(env, settingKey(field)))?.value ?? (field === 'tips' ? 'false' : 'true')
+      ]));
+      return jsonResponse({
+        error: false,
+        message: 'Response settings retrieved successfully.',
+        settings: Object.fromEntries(entries)
+      });
+    }
+    if (action === 'set') {
+      const field = String(q.field || '').toLowerCase();
+      if (!responseFields.includes(field)) {
+        return makePolishedError('invalid response setting', 400, { hint: `Use one of: ${responseFields.join(', ')}.` });
+      }
+      if (q.enabled === undefined) {
+        return makePolishedError('missing enabled value', 400, { hint: 'Provide enabled=true or enabled=false.' });
+      }
+      const enabled = !['false', '0', 'off', 'no'].includes(String(q.enabled).trim().toLowerCase());
+      await Vault.setSystemSetting(env, settingKey(field), enabled ? 'true' : 'false', 'boolean', field === 'rate_limit' ? 'Enable global rate limiting' : `Include ${field} in non-admin API responses`);
+      return jsonResponse({
+        error: false,
+        message: `Response ${field} setting updated successfully.`,
+        setting: field,
+        enabled
+      });
+    }
+    return makePolishedError('unknown action', 400, { hint: 'Use action=get or action=set.' });
   }
 
   return routeNotFound();

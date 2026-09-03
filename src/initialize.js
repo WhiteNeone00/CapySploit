@@ -40,15 +40,18 @@ export async function initializeDatabase(env) {
  */
 async function initializeSystemSettings(env) {
   const defaults = [
-    { key: 'maintenance_mode', value: 'false', type: 'boolean', description: 'Enable maintenance mode to disable non-admin access' },
-    { key: 'rate_limit_enabled', value: 'true', type: 'boolean', description: 'Enable global rate limiting' },
-    { key: 'max_concurrent_attacks', value: '50', type: 'number', description: 'Maximum concurrent attack threads globally' },
-    { key: 'max_user_concurrent_attacks', value: '3', type: 'number', description: 'Maximum concurrent attack threads per user' },
-    { key: 'cleanup_interval_hours', value: '1', type: 'number', description: 'How often to run cleanup tasks (hours)' },
-    { key: 'audit_log_retention_days', value: '90', type: 'number', description: 'How long to keep audit logs (days)' },
-    { key: 'default_user_plan', value: 'Default', type: 'string', description: 'Default plan assigned to new users' },
     { key: 'api_version', value: '1.0.0', type: 'string', description: 'Current API version' },
-    { key: 'service_name', value: 'CAPI', type: 'string', description: 'Public service name for API responses' }
+    { key: 'service_name', value: 'CAPI', type: 'string', description: 'Public service name for API responses' },
+    { key: 'maintenance_mode', value: 'false', type: 'boolean', description: 'Enable maintenance mode to disable non-admin access' },
+    { key: 'attacks_disabled', value: 'false', type: 'boolean', description: 'Disable all attack requests globally' },
+    { key: 'rate_limit_enabled', value: 'true', type: 'boolean', description: 'Enable global rate limiting' },
+    { key: 'auto_cleanup_enabled', value: 'true', type: 'boolean', description: 'Enable automatic cleanup jobs' },
+    { key: 'response_include_hint', value: 'true', type: 'boolean', description: 'Include hint in non-admin API responses' },
+    { key: 'response_include_timestamp', value: 'true', type: 'boolean', description: 'Include timestamp in non-admin API responses' },
+    { key: 'response_include_service', value: 'true', type: 'boolean', description: 'Include service in non-admin API responses' },
+    { key: 'response_include_version', value: 'true', type: 'boolean', description: 'Include version in non-admin API responses' },
+    { key: 'response_include_ads', value: 'true', type: 'boolean', description: 'Include ads in non-admin API responses' },
+    { key: 'response_include_tips', value: 'false', type: 'boolean', description: 'Include tips in non-admin API responses' }
   ];
 
   for (const setting of defaults) {
