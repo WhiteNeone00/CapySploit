@@ -185,6 +185,7 @@ export async function ensureTables(env) {
 
       max_slots INTEGER DEFAULT 0,
       max_concurrents INTEGER DEFAULT 5,
+      min_time INTEGER DEFAULT 30,
       max_time INTEGER,
 
       raw_access INTEGER DEFAULT 0,
@@ -301,6 +302,8 @@ export async function ensureTables(env) {
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN default_port INTEGER DEFAULT 80');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN max_time INTEGER');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN max_concurrents INTEGER DEFAULT 5');
+    await addColumn(DB, 'ALTER TABLE methods ADD COLUMN min_time INTEGER DEFAULT 30');
+    await DB.prepare('UPDATE methods SET min_time = 30 WHERE min_time IS NULL OR min_time != 30').run();
     await DB.prepare('UPDATE methods SET max_concurrents = 5 WHERE max_concurrents IS NULL OR max_concurrents = 1').run();
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN raw_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN star_access INTEGER DEFAULT 0');
@@ -750,7 +753,7 @@ export async function listMethods(env) {
 
   return await getCachedMethods(async () => {
     try {
-      const res = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_concurrents, max_time, raw_access, star_access, botnet_access, private_access, created_at FROM methods ORDER BY name ASC').all();
+      const res = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_concurrents, min_time, max_time, raw_access, star_access, botnet_access, private_access, created_at FROM methods ORDER BY name ASC').all();
       return res.results || [];
     } catch (error) {
       return [];
@@ -1253,7 +1256,7 @@ export async function syncMethodsFromPayload(env) {
 
   try {
     const payloadMethods = (DEFAULT_PAYLOAD.methods || []);
-    const existing = await DB.prepare('SELECT name, enabled, description, target_type, default_port, max_slots, max_concurrents, max_time FROM methods').all();
+    const existing = await DB.prepare('SELECT name, enabled, description, target_type, default_port, max_slots, max_concurrents, min_time, max_time FROM methods').all();
     const existingRows = (existing?.results || []).map((row) => ({
       name: String(row?.name || '').toLowerCase().trim(),
       enabled: Number(row?.enabled ?? 1),
@@ -1262,6 +1265,7 @@ export async function syncMethodsFromPayload(env) {
       default_port: row?.default_port || 80,
       max_slots: row?.max_slots || 0,
       max_concurrents: row?.max_concurrents || 5,
+      min_time: 30,
       max_time: row?.max_time || null
     }));
     const existingNames = new Set(existingRows.map((row) => row.name).filter(Boolean));
@@ -1288,6 +1292,7 @@ export async function syncMethodsFromPayload(env) {
         admin: Number(item.admin ?? 1),
         max_slots: Number(item.max_slots ?? item.max_concurrents ?? 0),
         max_concurrents: Number(item.max_concurrents ?? 5),
+        min_time: 30,
         max_time: item.max_time === undefined || item.max_time === null || item.max_time === '' ? null : Number(item.max_time),
         raw_access: Number(item.raw_access ?? 0),
         star_access: Number(item.star_access ?? 0),
@@ -1297,7 +1302,7 @@ export async function syncMethodsFromPayload(env) {
 
       if (!existingNames.has(name)) {
         await DB.prepare(
-          'INSERT INTO methods (name, description, enabled, target_type, default_access, vip, reseller, admin, max_slots, max_concurrents, default_port, max_time, raw_access, star_access, botnet_access, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO methods (name, description, enabled, target_type, default_access, vip, reseller, admin, max_slots, max_concurrents, min_time, default_port, max_time, raw_access, star_access, botnet_access, private_access, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         ).bind(
           normalized.name,
           normalized.description,
@@ -1309,6 +1314,7 @@ export async function syncMethodsFromPayload(env) {
           normalized.admin ? 1 : 0,
           normalized.max_slots || 0,
           normalized.max_concurrents || 5,
+          normalized.min_time,
           normalized.default_port || 80,
           normalized.max_time,
           normalized.raw_access ? 1 : 0,
@@ -1321,7 +1327,7 @@ export async function syncMethodsFromPayload(env) {
         existingNames.add(name);
       } else {
         await DB.prepare(
-          'UPDATE methods SET description = ?, enabled = ?, target_type = ?, default_access = ?, vip = ?, reseller = ?, admin = ?, max_slots = ?, max_concurrents = ?, default_port = ?, max_time = ?, raw_access = ?, star_access = ?, botnet_access = ?, private_access = ?, updated_at = ? WHERE name = ?'
+          'UPDATE methods SET description = ?, enabled = ?, target_type = ?, default_access = ?, vip = ?, reseller = ?, admin = ?, max_slots = ?, max_concurrents = ?, min_time = ?, default_port = ?, max_time = ?, raw_access = ?, star_access = ?, botnet_access = ?, private_access = ?, updated_at = ? WHERE name = ?'
         ).bind(
           normalized.description,
           normalized.enabled ? 1 : 0,
@@ -1332,6 +1338,7 @@ export async function syncMethodsFromPayload(env) {
           normalized.admin ? 1 : 0,
           normalized.max_slots || 0,
           normalized.max_concurrents || 5,
+          normalized.min_time,
           normalized.default_port || 80,
           normalized.max_time,
           normalized.raw_access ? 1 : 0,
@@ -1513,7 +1520,7 @@ export async function getMethod(env, methodName) {
   const DB = getDB(env);
   if (!DB) return null;
   try {
-    const explicit = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_concurrents, default_port, max_time, raw_access, star_access, botnet_access, private_access, created_at, updated_at, target_type FROM methods WHERE name = ?').bind(methodName).all();
+    const explicit = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_concurrents, min_time, default_port, max_time, raw_access, star_access, botnet_access, private_access, created_at, updated_at, target_type FROM methods WHERE name = ?').bind(methodName).all();
     if (explicit?.results?.[0]) return explicit.results[0];
 
     const fallback = await DB.prepare('SELECT * FROM methods WHERE name = ?').bind(methodName).all();

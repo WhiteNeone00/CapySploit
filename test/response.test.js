@@ -53,7 +53,7 @@ test('plan-style profile payloads strip legacy expiry/service fields and expose 
 
 test('methods responses return a direct array in data and include min_time metadata', async () => {
   const methods = [
-    { id: 1, name: 'udp', description: 'UDP flood', target_type: 'ip', default_port: 80, min_time: 10, max_time: 600, max_concurrents: 3, max_slots: 10 }
+    { id: 1, name: 'udp', description: 'UDP flood', target_type: 'ip', default_port: 80, min_time: 30, max_time: 600, max_concurrents: 3, max_slots: 10 }
   ];
 
   const response = {
@@ -65,7 +65,7 @@ test('methods responses return a direct array in data and include min_time metad
   assert.equal(Array.isArray(response.data), true);
   assert.equal(response.data[0].name, 'udp');
   assert.equal('methods' in response.data, false);
-  assert.equal(response.data[0].min_time, 10);
+  assert.equal(response.data[0].min_time, 30);
 });
 
 test('auth errors keep error-first ordering and omit redundant lock counters', async () => {
@@ -180,6 +180,22 @@ test('geo lookups can wait briefly and then mark the response as failed without 
   assert.deepEqual(result.info, {});
   assert.ok(elapsed >= 1100, `expected a 1-2s lookup wait but finished in ${elapsed}ms`);
   assert.ok(elapsed < 1800, `expected the request to continue once timeout hit but took ${elapsed}ms`);
+
+  global.fetch = originalFetch;
+});
+
+test('geo lookups mark an unsuccessful provider response as failed', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: false,
+    status: 503,
+    json: async () => ({})
+  });
+
+  const result = await resolveTargetGeoInfo('198.51.100.7', 1200);
+
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(result.info, {});
 
   global.fetch = originalFetch;
 });

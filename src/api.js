@@ -98,7 +98,7 @@ export async function resolveTargetGeoInfo(target, timeoutMs = 1500) {
   const lookupPromise = lookupIpInfo(cleanTarget);
   const result = await Promise.race([
     lookupPromise.then((data) => ({
-      status: 'resolved',
+      status: data ? 'resolved' : 'failed',
       info: getSafeIpInfo(data),
       elapsedMs: performance.now() - startedAt
     })),
@@ -574,6 +574,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
           description: method?.description || meta?.description || `${method?.name || 'method'} method`,
           target_type: meta?.target_type || null,
           default_port: meta?.default_port || null,
+          min_time: Number(method?.min_time ?? meta?.min_time ?? 30),
           max_time: meta?.max_time || null,
           max_concurrents: meta?.max_concurrents || null,
           max_slots: meta?.max_slots || null
@@ -1125,8 +1126,13 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     }
 
     const limits = getUserLimits(user);
+    const methodMinTime = Number(methodMeta?.min_time ?? 30);
     const methodMaxTime = Number(methodMeta?.max_time || 0);
     const effectiveMaxTime = methodMaxTime > 0 ? Math.min(limits.maxTime, methodMaxTime) : limits.maxTime;
+
+    if (methodMinTime > 0 && record.duration < methodMinTime) {
+      return makePolishedError(`requested time is below the minimum allowed time of ${methodMinTime}`, 400, { hint: `Increase the duration to at least ${methodMinTime} seconds for this method.` });
+    }
 
     if (effectiveMaxTime > 0 && record.duration > effectiveMaxTime) {
       return makePolishedError(`requested time exceeds the maximum allowed time of ${effectiveMaxTime}`, 400, { hint: `Lower the duration to ${effectiveMaxTime} seconds or less for this method and plan.` });
@@ -1206,10 +1212,9 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const powerSaving = isPowerSavingEnabled(user.power_saving);
     const bypassPower = !powerSaving;
     const responseGeo = (() => {
-      if (geoPreference && !geoDisabled) return geoPreference;
-      if (geoLookup?.status === 'resolved') return 'full';
       if (geoLookup?.status === 'skipped') return 'skipped';
-      return 'failed';
+      if (geoLookup?.status !== 'resolved') return 'failed';
+      return geoPreference && !geoDisabled ? geoPreference : 'full';
     })();
     const attackEndTime = performance.now(); // End timing
     const executionTime = attackEndTime - attackStartTime; // Calculate execution time
