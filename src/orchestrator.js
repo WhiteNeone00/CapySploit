@@ -179,8 +179,6 @@ export async function handleRequest(request, env, ctx = null) {
         schemaReady = false;
       }
 
-
-    await Vault.ensureResponseSettings(env);
       if (!schemaReady) {
         initializationPromise ||= initializeAll(env);
         const currentInitialization = initializationPromise;
@@ -190,6 +188,7 @@ export async function handleRequest(request, env, ctx = null) {
           if (initializationPromise === currentInitialization) initializationPromise = null;
         }
       }
+      await Vault.ensureResponseSettings(env);
       dbInitialized = true;
       logger.info('database_initialized');
     }
