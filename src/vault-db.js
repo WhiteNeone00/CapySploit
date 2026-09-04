@@ -90,9 +90,12 @@ export async function ensureTables(env) {
       default_port INTEGER DEFAULT 80,
 
       price REAL DEFAULT 0,
+      lifetime_price REAL DEFAULT 0,
 
       max_time INTEGER DEFAULT 60,
+      cooldown INTEGER DEFAULT 10,
       max_concurrents INTEGER DEFAULT 1,
+      max_daily_attacks INTEGER DEFAULT 100,
 
       days_active INTEGER DEFAULT 5,
       api INTEGER DEFAULT 0,
@@ -287,6 +290,8 @@ export async function ensureTables(env) {
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN api INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN price REAL DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN lifetime_price REAL DEFAULT 0');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN cooldown INTEGER DEFAULT 10');
+    await addColumn(DB, 'ALTER TABLE plans ADD COLUMN max_daily_attacks INTEGER DEFAULT 100');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN days_active INTEGER DEFAULT 5');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN raw_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE plans ADD COLUMN star_access INTEGER DEFAULT 0');
@@ -408,35 +413,6 @@ export async function getUser(env, username, options = {}) {
   return cached;
 }
 
-export async function getUserBatch(env, usernames = []) {
-  if (!usernames || !usernames.length) return {};
-  const DB = getDB(env);
-  if (!DB) return {};
-  try {
-    const placeholders = usernames.map(() => '?').join(',');
-    const explicit = await DB.prepare(`SELECT
-      username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,
-      created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,
-      power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,
-      last_ip,whitelisted_ip,warning_count,warning_reset_at
-      FROM users WHERE username IN (${placeholders})`).bind(...usernames).all();
-    const map = {};
-    (explicit?.results || []).forEach((user) => {
-      map[user.username] = user;
-    });
-    if (Object.keys(map).length === usernames.length) return map;
-
-    const fallback = await DB.prepare(`SELECT * FROM users WHERE username IN (${placeholders})`).bind(...usernames).all();
-    (fallback?.results || []).forEach((user) => {
-      map[user.username] = user;
-    });
-    return map;
-  } catch (error) {
-    console.error('Error in getUserBatch:', error.message);
-    return {};
-  }
-}
-
 export async function saveUser(env, user) {
   const DB = getDB(env);
   if (!DB) return;
@@ -444,9 +420,41 @@ export async function saveUser(env, user) {
   const apiValue = user.api ?? user.api_access ?? 0;
   const storedPassword = String(user.password || '');
   try {
-    await DB.prepare(`INSERT OR REPLACE INTO users (
+    await DB.prepare(`INSERT INTO users (
       username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,last_ip,whitelisted_ip,warning_count,warning_reset_at,suspend_reason,suspended_by
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(username) DO UPDATE SET
+      password = excluded.password,
+      admin = excluded.admin,
+      reseller = excluded.reseller,
+      vip = excluded.vip,
+      holder = excluded.holder,
+      api = excluded.api,
+      plan_id = excluded.plan_id,
+      max_time = excluded.max_time,
+      cooldown = excluded.cooldown,
+      max_concurrents = excluded.max_concurrents,
+      max_daily_attacks = excluded.max_daily_attacks,
+      created_by = excluded.created_by,
+      created_at = excluded.created_at,
+      last_request_time = excluded.last_request_time,
+      expiry_unix = excluded.expiry_unix,
+      bypass_slots = excluded.bypass_slots,
+      suspended = excluded.suspended,
+      power_saving = excluded.power_saving,
+      bypass_anti_spam = excluded.bypass_anti_spam,
+      bypass_blacklist = excluded.bypass_blacklist,
+      raw_access = excluded.raw_access,
+      star_access = excluded.star_access,
+      botnet_access = excluded.botnet_access,
+      private_access = excluded.private_access,
+      bypass_power = excluded.bypass_power,
+      last_ip = excluded.last_ip,
+      whitelisted_ip = excluded.whitelisted_ip,
+      warning_count = excluded.warning_count,
+      warning_reset_at = excluded.warning_reset_at,
+      suspend_reason = excluded.suspend_reason,
+      suspended_by = excluded.suspended_by`).bind(
       user.username,
       storedPassword,
       user.admin ? 1 : 0,
@@ -504,7 +512,7 @@ export async function deleteUser(env, username) {
 export async function listUsers(env) {
   const DB = getDB(env);
   if (!DB) return [];
-  const res = await DB.prepare('SELECT username,admin,vip,reseller,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,expiry_unix,bypass_slots,suspended,last_request_time,last_ip,whitelisted_ip,raw_access,star_access,botnet_access,private_access,bypass_power,warning_count,warning_reset_at,suspend_reason,suspended_by FROM users').all();
+  const res = await DB.prepare("SELECT username,admin,vip,reseller,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,expiry_unix,bypass_slots,suspended,last_request_time,last_ip,whitelisted_ip,raw_access,star_access,botnet_access,private_access,bypass_power,warning_count,warning_reset_at,suspend_reason,suspended_by FROM users ORDER BY CASE WHEN lower(username) = 'root' THEN 0 ELSE 1 END, rowid ASC").all();
   return res.results || [];
 }
 
@@ -654,13 +662,6 @@ export async function updateUserLastIp(env, username, ip) {
   invalidateUserCache(username);
 }
 
-export async function getUserLastRequestTime(env, username) {
-  const DB = getDB(env);
-  if (!DB) return null;
-  const res = await DB.prepare('SELECT last_request_time FROM users WHERE username = ?').bind(username).all();
-  return (res && res.results && res.results[0] && res.results[0].last_request_time) || null;
-}
-
 export async function addOngoingAttack(env, rec) {
   const DB = getDB(env);
   if (!DB) return;
@@ -764,14 +765,6 @@ export async function getLogs(env, username) {
   return res.results || [];
 }
 
-export async function listOngoing(env) {
-  const DB = getDB(env);
-  if (!DB) return [];
-  await cleanupOngoing(env);
-  const res = await DB.prepare("SELECT id, username, target, port, method, duration, started_at, expires_at, status FROM ongoing_attacks WHERE status='running' AND datetime(expires_at) > datetime('now') ORDER BY started_at DESC").all();
-  return res.results || [];
-}
-
 export async function getRecentAttacks(env, username, limit = 10) {
   const DB = getDB(env);
   if (!DB) return [];
@@ -856,25 +849,10 @@ export async function countVerifiedDiscordLinks(env) {
   return Number(res?.results?.[0]?.c || 0);
 }
 
-export async function countPendingDiscordLinks(env) {
-  const DB = getDB(env);
-  if (!DB) return 0;
-  const res = await DB.prepare("SELECT COUNT(*) AS c FROM discord_links WHERE status = 'pending'").all();
-  return Number(res?.results?.[0]?.c || 0);
-}
-
 export async function countLogsToday(env) {
   const DB = getDB(env);
   if (!DB) return 0;
   const res = await DB.prepare("SELECT COUNT(*) AS c FROM logs WHERE datetime(created_at) >= datetime('now','start of day')").all();
-  return Number(res?.results?.[0]?.c || 0);
-}
-
-export async function countUsersByFlag(env, flag) {
-  const DB = getDB(env);
-  if (!DB) return 0;
-  if (!['vip', 'holder', 'reseller', 'api', 'suspended'].includes(flag)) return 0;
-  const res = await DB.prepare(`SELECT COUNT(*) AS c FROM users WHERE ${flag} = 1`).all();
   return Number(res?.results?.[0]?.c || 0);
 }
 

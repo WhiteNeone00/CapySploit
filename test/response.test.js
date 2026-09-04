@@ -5,8 +5,8 @@ import { countOnlineUsers, countUserDailyAttacks, ensureTables, getUser, getUser
 import { adminHandler, logAuditAction } from '../src/admin.js';
 import { getCachedSystemSetting, getUserExpiryDate, invalidateMethodCache, invalidateUserCache, isUserExpired, parseExpiryUnix } from '../src/helpers.js';
 import { isMethodPermittedForUser } from '../src/policy.js';
-import { fanOutMethodApiLinks, formatOngoingAttackResponse, getSafeIpInfo, ipLookup, normalizeProfilePayload, resolveFastIpInfo, resolveTargetGeoInfo } from '../src/api.js';
-import { buildDiscordWebhookPayload } from '../src/config.js';
+import { apiHandler, fanOutMethodApiLinks, formatOngoingAttackResponse, getSafeIpInfo, ipLookup, normalizeProfilePayload, resolveFastIpInfo, resolveTargetGeoInfo } from '../src/api.js';
+import { FAILED_AUTH_CONFIG, buildDiscordWebhookPayload } from '../src/config.js';
 
 test('profile payloads are flattened directly into data instead of nested under profile', () => {
   const normalized = normalizeProfilePayload({
@@ -95,6 +95,79 @@ test('nested profile expiry_unix is shown instead of Lifetime', () => {
 
   assert.equal(normalized.expiry_date, '2026-09-04T00:00:00.000Z');
   assert.equal('expiry_unix' in normalized, false);
+});
+
+test('attack route rejects an expired authenticated user before launch', async () => {
+  const expiredUser = {
+    username: 'demo',
+    password: 'secret',
+    api: 1,
+    expiry_unix: Math.floor(Date.now() / 1000) - 1,
+    suspended: 0,
+    bypass_anti_spam: 0
+  };
+  const DB = {
+    prepare(sql) {
+      return {
+        bind() {
+          return this;
+        },
+        async all() {
+          if (sql.includes('FROM users')) return { results: [expiredUser] };
+          return { results: [] };
+        },
+        async run() {
+          return { meta: { changes: 1 } };
+        }
+      };
+    }
+  };
+  const request = new Request('https://example.test/api/attack?username=demo&password=secret&host=1.1.1.1&port=80&method=udp&time=30');
+  const response = await apiHandler(['attack'], request, { capi_db: DB }, 'test-request', {}, {
+    serviceName: 'CAPI',
+    apiVersion: '1.0.0'
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 403);
+  assert.equal(body.message, 'account expired');
+});
+
+test('failed API passwords reach lockout instead of clearing the counter', async () => {
+  const DB = {
+    prepare(sql) {
+      return {
+        bind() {
+          return this;
+        },
+        async all() {
+          if (sql.includes('FROM users')) return { results: [{ username: 'lockout-route', password: 'correct', api: 1, suspended: 0, expiry_unix: 0 }] };
+          return { results: [] };
+        },
+        async run() {
+          return { meta: { changes: 1 } };
+        }
+      };
+    }
+  };
+  const env = { capi_db: DB };
+  const requestContext = { serviceName: 'CAPI', apiVersion: '1.0.0' };
+
+  let response;
+  for (let attempt = 0; attempt <= FAILED_AUTH_CONFIG.MAX_ATTEMPTS; attempt += 1) {
+    response = await apiHandler(
+      ['attack'],
+      new Request('https://example.test/api/attack?username=lockout-route&password=wrong&host=1.1.1.1&port=80&method=udp&time=30'),
+      env,
+      `lockout-${attempt}`,
+      {},
+      requestContext
+    );
+  }
+
+  const body = await response.json();
+  assert.equal(response.status, 429);
+  assert.match(body.message, /temporarily locked/i);
 });
 
 test('methods responses return a direct array in data and include min_time metadata', async () => {
@@ -434,6 +507,9 @@ test('adds missing user columns for the current schema', async () => {
 
   assert.ok(calls.some((sql) => sql.includes('ALTER TABLE users ADD COLUMN whitelisted_ip')));
   assert.ok(calls.some((sql) => sql.includes('ALTER TABLE users ADD COLUMN last_ip')));
+  assert.ok(calls.some((sql) => sql.includes('ALTER TABLE plans ADD COLUMN cooldown')));
+  assert.ok(calls.some((sql) => sql.includes('ALTER TABLE plans ADD COLUMN max_daily_attacks')));
+  assert.ok(calls.some((sql) => sql.includes('cooldown INTEGER') && sql.includes('max_daily_attacks INTEGER')));
 });
 
 test('syncMethodsFromPayload keeps payload as source of truth and removes stale rows', async () => {

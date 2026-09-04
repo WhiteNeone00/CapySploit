@@ -32,8 +32,7 @@ async function authenticateApiCredentials(qv, env, request) {
   }
 
   const user = await Vault.getUser(env, username, { fresh: true });
-    if (isSuspendedUser(user)) return { ok: false, response: suspendedAccountResponse() };
-    clearFailedAuthAttempts(username);
+  if (isSuspendedUser(user)) return { ok: false, response: suspendedAccountResponse() };
 
   const authStatus = getFailedAuthAttempts(username);
   if (authStatus.isLocked) {
@@ -182,7 +181,6 @@ export function formatOngoingAttackResponse(items = []) {
       const expiresAt = new Date(item.expires_at).getTime();
       const remainingMs = expiresAt > now ? Math.max(0, expiresAt - now) : 0;
       const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
-
       return {
         target: item?.target || 'unknown',
         method: (item?.method || 'udp').toLowerCase(),
@@ -966,20 +964,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     
     const attackStartTime = performance.now(); // Start timing
     const qv = parseQuery(request);
-    const authHeader = (request.headers && request.headers.get ? request.headers.get('Authorization') : null) || '';
-    const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-    let botAuth = false;
-    // If caller presents the BOT_API_KEY and provides a discord_user_id, allow acting on behalf of the linked user without password
-    if (bearer && env.BOT_API_KEY && bearer === String(env.BOT_API_KEY)) {
-      const discordId = qv.discord_user_id || qv.discord_id || qv.discord;
-      if (discordId) {
-        const link = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordId);
-        if (link && link.username) {
-          qv.username = link.username;
-          botAuth = true;
-        }
-      }
-    }
     const targetParameter = qv.target || qv.host || qv.ip;
     const missingParameters = [
       !String(targetParameter || '').trim() ? 'host' : null,
@@ -1011,17 +995,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     const user = requestUser || requestContext?.user || (record.username ? await Vault.getUser(env, record.username) : null);
     if (!user) return makePolishedError('user does not exist', 404, { hint: 'Verify the username supplied in the request.' });
     if (!user.username) return makePolishedError('user record is invalid', 500, { hint: 'User account data is corrupted. Contact support.' });
-
-    // If not bot-authenticated, require password parameter and validate credentials
-    if (!botAuth) {
-      const providedPassword = (qv.password || qv.pass || '').toString();
-      if (!providedPassword) return makePolishedError('missing credentials', 401, { hint: 'Provide username and password in the request.' });
-      // Note: Vault stores the password in the `password` field. Adjust if passwords are hashed.
-      if (String(user.password || '') !== providedPassword) return makePolishedError('invalid credentials', 401, { hint: 'Username or password is incorrect.' });
-      const clientIp = getClientIp(request);
-      if (!isUserIpAllowed(user, clientIp)) return makePolishedError('access denied from this IP address', 403, { ip: clientIp, whitelisted_ip: user.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' });
-      await Vault.updateUserLastIp(env, user.username, clientIp);
-    }
 
     if (user.suspended || user.suspended === true) {
       return makePolishedError('account suspended', 403, { suspended: true, hint: 'This account is suspended. Contact an administrator to restore access.' });
@@ -1223,10 +1196,15 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       }
     }
 
-    await Promise.all([
-      Vault.addLog(env, record),
-      Vault.addOngoingAttack(env, record)
-    ]);
+    try {
+      await Promise.all([
+        Vault.addLog(env, record),
+        Vault.addOngoingAttack(env, record)
+      ]);
+    } catch (error) {
+      if (CONCURRENCY_CONFIG.ENABLED) releaseAttackSlots(record.username);
+      throw error;
+    }
 
     void fanOutMethodApiLinks(methodMeta, record).catch(() => {});
 
