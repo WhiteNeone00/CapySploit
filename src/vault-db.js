@@ -145,8 +145,6 @@ export async function ensureTables(env) {
       bypass_blacklist INTEGER DEFAULT 0,
 
       expiry_unix INTEGER,
-      expires_at TEXT,
-
       last_ip TEXT,
       whitelisted_ip TEXT,
 
@@ -284,7 +282,6 @@ export async function ensureTables(env) {
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN botnet_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN private_access INTEGER DEFAULT 0');
       await addColumn(DB, 'ALTER TABLE users ADD COLUMN bypass_power INTEGER DEFAULT 0');
-    await addColumn(DB, 'ALTER TABLE users ADD COLUMN expires_at TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN warning_count INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN warning_reset_at TEXT');
     await addColumn(DB, 'ALTER TABLE users ADD COLUMN api INTEGER DEFAULT 0');
@@ -314,6 +311,16 @@ export async function ensureTables(env) {
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN star_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN botnet_access INTEGER DEFAULT 0');
     await addColumn(DB, 'ALTER TABLE methods ADD COLUMN private_access INTEGER DEFAULT 0');
+
+    try {
+      const userExpiryColumns = await DB.prepare('PRAGMA table_info(users)').all();
+      if ((userExpiryColumns?.results || []).some((column) => column.name === 'expires_at')) {
+        await DB.prepare("UPDATE users SET expiry_unix = CAST(strftime('%s', expires_at) AS INTEGER) WHERE (expiry_unix IS NULL OR expiry_unix = 0) AND expires_at IS NOT NULL AND expires_at != ''").run();
+        await DB.prepare('ALTER TABLE users DROP COLUMN expires_at').run();
+      }
+    } catch (error) {
+      console.error('Failed to migrate duplicate user expiry column:', error.message);
+    }
 
     try {
       const userColumns = await DB.prepare('PRAGMA table_info(users)').all();
@@ -379,7 +386,7 @@ async function fetchUserFromDatabase(DB, username) {
   const explicit = await DB.prepare(`SELECT
     username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,
     created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,
-    power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,expires_at,
+    power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,
     last_ip,whitelisted_ip,warning_count,warning_reset_at
     FROM users WHERE username = ?`).bind(username).all();
   if (explicit?.results?.[0]) return explicit.results[0];
@@ -410,7 +417,7 @@ export async function getUserBatch(env, usernames = []) {
     const explicit = await DB.prepare(`SELECT
       username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,
       created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,suspend_reason,suspended_by,
-      power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,expires_at,
+      power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,
       last_ip,whitelisted_ip,warning_count,warning_reset_at
       FROM users WHERE username IN (${placeholders})`).bind(...usernames).all();
     const map = {};
@@ -438,8 +445,8 @@ export async function saveUser(env, user) {
   const storedPassword = String(user.password || '');
   try {
     await DB.prepare(`INSERT OR REPLACE INTO users (
-      username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,expires_at,last_ip,whitelisted_ip,warning_count,warning_reset_at,suspend_reason,suspended_by
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+      username,password,admin,reseller,vip,holder,api,plan_id,max_time,cooldown,max_concurrents,max_daily_attacks,created_by,created_at,last_request_time,expiry_unix,bypass_slots,suspended,power_saving,bypass_anti_spam,bypass_blacklist,raw_access,star_access,botnet_access,private_access,bypass_power,last_ip,whitelisted_ip,warning_count,warning_reset_at,suspend_reason,suspended_by
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
       user.username,
       storedPassword,
       user.admin ? 1 : 0,
@@ -466,7 +473,6 @@ export async function saveUser(env, user) {
       user.botnet_access ? 1 : 0,
       user.private_access ? 1 : 0,
       user.bypass_power ? 1 : 0,
-      user.expires_at || null,
       user.last_ip || null,
       user.whitelisted_ip || null,
       Number(user.warning_count || 0),
@@ -1206,6 +1212,11 @@ export async function applyPlanToUser(env, username, planName) {
     botnet_access: Boolean(plan.botnet_access ?? 0) ? 1 : 0,
     private_access: Boolean(plan.private_access ?? 0) ? 1 : 0
   };
+
+  const daysActive = Number(plan.days_active || 0);
+  nextUser.expiry_unix = Number.isFinite(daysActive) && daysActive > 0
+    ? Math.floor(Date.now() / 1000) + Math.floor(daysActive * 86400)
+    : 0;
 
   await saveUser(env, nextUser);
   return nextUser;

@@ -3,7 +3,7 @@ import { jsonResponse, structuredResponse, parseQuery, routeNotFound, resolveSer
 import * as Vault from './vault-db.js';
 import { initializeAll, getInitializationStatus } from './initialize.js';
 import { getPayloadMethods } from '../payload.js';
-import { sanitizeUserForResponse, paginate, validatePaginationParams, applyGlobalRateLimit, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts, isUserIpAllowed } from './helpers.js';
+import { sanitizeUserForResponse, paginate, validatePaginationParams, applyGlobalRateLimit, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts, isUserIpAllowed, parseExpiryUnix } from './helpers.js';
 import { PASSWORD_CONFIG, ADMIN_PROTECTED_FIELDS, ADMIN_EDITABLE_FIELDS, APP_DEFAULTS, USER_LIMITS, resolveApiMessage, resolveApiHint, sendDiscordWebhookForEvent } from './config.js';
 
 // ==================== UTILITY FUNCTIONS ====================
@@ -324,7 +324,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       max_concurrents: USER_LIMITS.DEFAULT_MAX_CONCURRENTS,
       max_daily_attacks: USER_LIMITS.DEFAULT_MAX_DAILY_ATTACKS,
       created_by: adminUsername || 'root',
-      expiry_unix: 0,
+      expiry_unix: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60),
       bypass_slots: Number(q.bypass_slots || 0),
       suspended: Number(q.suspended || 0)
     };
@@ -438,8 +438,14 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       return makePolishedError('field not editable', 400, { hint: `Editable fields: ${ALLOWED_FIELDS.join(', ')}. For password changes, use /admin/change_password.` });
     }
     
-    // Convert to appropriate type
-    u[fieldName] = isNaN(Number(fieldValue)) ? fieldValue : Number(fieldValue);
+    // Convert expiry dates to the canonical Unix-seconds field.
+    if (fieldName === 'expiry_unix') {
+      const parsedExpiry = parseExpiryUnix(fieldValue);
+      if (parsedExpiry === null) return makePolishedError('invalid expiry date', 400, { hint: 'Use Unix seconds or an ISO date such as 2026-12-20T23:59:59Z.' });
+      u[fieldName] = parsedExpiry;
+    } else {
+      u[fieldName] = isNaN(Number(fieldValue)) ? fieldValue : Number(fieldValue);
+    }
     await Vault.saveUser(env, u);
     return jsonResponse({ error: false, message: resolveApiMessage('user_field_updated', `User '${q.user_to_edit}' field '${fieldName}' updated successfully.`), field: fieldName, new_value: u[fieldName] });
   }

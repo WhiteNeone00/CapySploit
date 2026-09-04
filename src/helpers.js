@@ -601,6 +601,25 @@ export function checkUserCooldown(lastRequestTime, cooldownSeconds = 10, bypassE
   };
 }
 
+export function getUserExpiryDate(user) {
+  const expiryUnix = Number(user?.expiry_unix || 0);
+  const unixExpiry = Number.isFinite(expiryUnix) && expiryUnix > 0 ? expiryUnix * 1000 : 0;
+  return unixExpiry > 0 ? new Date(unixExpiry) : null;
+}
+
+export function parseExpiryUnix(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return 0;
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue)) return Math.max(0, Math.floor(numericValue));
+  const parsedMs = Date.parse(String(value).trim());
+  return Number.isFinite(parsedMs) ? Math.floor(parsedMs / 1000) : null;
+}
+
+export function isUserExpired(user) {
+  const expiryDate = getUserExpiryDate(user);
+  return Boolean(expiryDate && Date.now() >= expiryDate.getTime());
+}
+
 /**
  * Check API rate limit (3-second minimum between requests)
  * Prevents rapid F5 spam and abuse

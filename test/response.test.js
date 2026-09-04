@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { jsonResponse, makePolishedError } from '../src/response.js';
 import { countOnlineUsers, countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, recordAuthenticatedActivity, recordUserWarning, setSystemSetting, syncMethodsFromPayload, updateMethod, getMethod, listMethods } from '../src/vault-db.js';
 import { adminHandler, logAuditAction } from '../src/admin.js';
-import { getCachedSystemSetting, invalidateMethodCache, invalidateUserCache } from '../src/helpers.js';
+import { getCachedSystemSetting, getUserExpiryDate, invalidateMethodCache, invalidateUserCache, isUserExpired, parseExpiryUnix } from '../src/helpers.js';
 import { isMethodPermittedForUser } from '../src/policy.js';
 import { fanOutMethodApiLinks, formatOngoingAttackResponse, getSafeIpInfo, ipLookup, normalizeProfilePayload, resolveFastIpInfo, resolveTargetGeoInfo } from '../src/api.js';
 import { buildDiscordWebhookPayload } from '../src/config.js';
@@ -27,6 +27,13 @@ test('profile payloads are flattened directly into data instead of nested under 
   assert.equal(normalized.admin, false);
   assert.equal('profile' in normalized, false);
   assert.equal(normalized.warnings, 2);
+});
+
+test('user expiry supports Unix timestamps and ISO dates', () => {
+  assert.equal(isUserExpired({ expiry_unix: Math.floor(Date.now() / 1000) - 1 }), true);
+  assert.equal(isUserExpired({ expires_at: new Date(Date.now() + 60000).toISOString() }), false);
+  const parsedExpiry = parseExpiryUnix('2026-12-20T00:00:00.000Z');
+  assert.match(getUserExpiryDate({ expiry_unix: parsedExpiry }).toISOString(), /^2026-12-20T00:00:00/);
 });
 
 test('authenticated activity counts each user once within the online window', async () => {
@@ -81,6 +88,13 @@ test('plan-style profile payloads strip legacy expiry/service fields and expose 
   assert.equal(normalized.star_access, false);
   assert.equal(normalized.botnet_access, true);
   assert.equal(normalized.private_access, false);
+});
+
+test('nested profile expiry_unix is shown instead of Lifetime', () => {
+  const normalized = normalizeProfilePayload({ profile: { expiry_unix: 1788480000 } });
+
+  assert.equal(normalized.expiry_date, '2026-09-04T00:00:00.000Z');
+  assert.equal('expiry_unix' in normalized, false);
 });
 
 test('methods responses return a direct array in data and include min_time metadata', async () => {

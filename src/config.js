@@ -654,7 +654,6 @@ export const ADMIN_EDITABLE_FIELDS = [
   'suspended',
   'suspend_reason',
   'suspended_by',
-  'expires_at',
   'last_ip',
   'whitelisted_ip',
   'warning_count',

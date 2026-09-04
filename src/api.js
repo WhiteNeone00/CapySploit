@@ -4,7 +4,7 @@ import * as Vault from './vault-db.js';
 import { getPayloadMethods, getPayloadBlacklists } from '../payload.js';
 import { getUserLimits, isMethodPermittedForUser } from './policy.js';
 import { generateVerificationCode, buildDiscordRoleNames, userPlanRole } from './discord.js';
-import { formatSlotBar, generateAttackId, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot, lookupIpInfo, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts, getClientIp, isUserIpAllowed } from './helpers.js';
+import { formatSlotBar, generateAttackId, applyGlobalRateLimit, checkUserCooldown, withTimeout, acquireAttackSlots, releaseAttackSlots, acquireOutgoingRequestSlot, releaseOutgoingRequestSlot, lookupIpInfo, trackFailedAuthAttempt, getFailedAuthAttempts, clearFailedAuthAttempts, getClientIp, isUserIpAllowed, isUserExpired, getUserExpiryDate } from './helpers.js';
 import { TIMEOUT_CONFIG, CONCURRENCY_CONFIG, APP_DEFAULTS, resolveApiMessage, resolveApiHint, sendDiscordWebhookForEvent } from './config.js';
 import { isIPv4, isPrivateIPRange, isValidTarget, isUrlTarget, isBlacklistedTarget, isBlacklistedByMetadata, validatePayloadLength } from './validator.js';
 
@@ -32,10 +32,8 @@ async function authenticateApiCredentials(qv, env, request) {
   }
 
   const user = await Vault.getUser(env, username, { fresh: true });
-  if (isSuspendedUser(user)) {
+    if (isSuspendedUser(user)) return { ok: false, response: suspendedAccountResponse() };
     clearFailedAuthAttempts(username);
-    return { ok: false, response: suspendedAccountResponse() };
-  }
 
   const authStatus = getFailedAuthAttempts(username);
   if (authStatus.isLocked) {
@@ -200,6 +198,7 @@ export function normalizeProfilePayload(payload = {}) {
   if (!payload || typeof payload !== 'object') return {};
 
   const flat = { ...(payload.profile && typeof payload.profile === 'object' ? payload.profile : {}), ...payload };
+  const expiryValue = Number(payload.expiry_unix ?? payload.profile?.expiry_unix ?? flat.expiry_unix ?? 0);
   delete flat.profile;
 
   delete flat.service_name;
@@ -208,7 +207,6 @@ export function normalizeProfilePayload(payload = {}) {
   delete flat.formatted_expiry;
 
   if (!('expiry_date' in flat) || flat.expiry_date === undefined || flat.expiry_date === null || flat.expiry_date === '') {
-    const expiryValue = Number(payload.expiry_unix ?? flat.expiry_unix ?? 0);
     flat.expiry_date = Number.isFinite(expiryValue) && expiryValue > 0 ? new Date(expiryValue * 1000).toISOString() : 'Lifetime';
   }
 
@@ -367,6 +365,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       }
     }
 
+    if (endpoint === 'attack' && isUserExpired(requestUser)) return makePolishedError('account expired', 403);
     if (isSuspendedUser(requestUser)) return suspendedAccountResponse();
   }
 
@@ -385,6 +384,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
             ? requestContext.user
             : await Vault.getUser(env, link.username);
           if (isSuspendedUser(user)) return { ok: false, response: suspendedAccountResponse(), reason: 'suspended' };
+          if (isUserExpired(user)) return { ok: false, response: makePolishedError('account expired', 403), reason: 'expired' };
           await Vault.recordAuthenticatedActivity(env, user?.username || link.username);
           return { ok: true, username: link.username, user, bot: true };
         }
@@ -784,7 +784,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     
     // Format dates
     const createdAt = u.created_at ? new Date(u.created_at).toISOString().replace('T', ' ').substring(0, 19) : null;
-    const expiryDate = u.expiry_unix && u.expiry_unix > 0 ? new Date(u.expiry_unix * 1000).toISOString() : 'Lifetime';
+    const expiryDate = getUserExpiryDate(u)?.toISOString() || 'Lifetime';
     
     const responsePayload = {
       error: false,
@@ -1028,13 +1028,8 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     }
     
     // Check if account has expired
-    const expiryUnix = Number(user?.expiry_unix || 0);
-    if (expiryUnix && expiryUnix > 0) {
-      const nowUnix = Math.floor(Date.now() / 1000);
-      if (nowUnix > expiryUnix) {
-        const expiryDate = new Date(expiryUnix * 1000).toISOString();
-        return makePolishedError('account expired', 403, { expired: true, expiry_date: expiryDate, hint: 'Your account has expired. Contact an administrator to renew access.' });
-      }
+    if (isUserExpired(user)) {
+      return makePolishedError('account expired', 403);
     }
     
     if (!(user?.api ?? user?.api_access)) return makePolishedError('user has no API access', 403, { hint: 'Enable API access for this account before trying again.' });
@@ -1186,7 +1181,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       return makePolishedError(
         `Attack cooldown active. Please wait ${cooldownCheck.secondsUntilAvailable} second${cooldownCheck.secondsUntilAvailable !== 1 ? 's' : ''} before launching another attack.`,
         429,
-        { cooldown_seconds: cooldownCheck.secondsUntilAvailable, hint: 'Wait for your cooldown to expire before launching another attack.' }
+        { hint: 'Wait for your cooldown to expire before launching another attack.' }
       );
     }
 
