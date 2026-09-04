@@ -170,6 +170,39 @@ test('failed API passwords reach lockout instead of clearing the counter', async
   assert.match(body.message, /temporarily locked/i);
 });
 
+test('invalid API credentials do not mark a user online', async () => {
+  let activityWrites = 0;
+  const DB = {
+    prepare(sql) {
+      return {
+        bind() {
+          return this;
+        },
+        async all() {
+          if (sql.includes('FROM users')) return { results: [{ username: 'offline-check', password: 'correct', api: 1, suspended: 0, expiry_unix: 0 }] };
+          return { results: [] };
+        },
+        async run() {
+          if (sql.includes('user_activity')) activityWrites += 1;
+          return { meta: { changes: 1 } };
+        }
+      };
+    }
+  };
+
+  const response = await apiHandler(
+    ['attack'],
+    new Request('https://example.test/api/attack?username=offline-check&password=wrong&host=1.1.1.1&port=80&method=udp&time=30'),
+    { capi_db: DB },
+    'offline-check-request',
+    {},
+    { serviceName: 'CAPI', apiVersion: '1.0.0' }
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal(activityWrites, 0);
+});
+
 test('methods responses return a direct array in data and include min_time metadata', async () => {
   const methods = [
     { id: 1, name: 'udp', description: 'UDP flood', target_type: 'ip', default_port: 80, min_time: 30, max_time: 600, max_concurrents: 3, max_slots: 10 }
