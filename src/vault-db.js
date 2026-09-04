@@ -169,6 +169,11 @@ export async function ensureTables(env) {
       created_at TEXT
     )`).run();
 
+    await DB.prepare(`CREATE TABLE IF NOT EXISTS user_activity (
+      username TEXT PRIMARY KEY,
+      last_seen TEXT NOT NULL
+    )`).run();
+
     await DB.prepare(`CREATE TABLE IF NOT EXISTS methods (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE,
@@ -612,6 +617,28 @@ export async function updateUserLastRequestTime(env, username, ip = null) {
   await DB.prepare(sql).bind(...params).run();
   invalidateUserCache(username);
   invalidateSettingsCache();
+}
+
+export async function recordAuthenticatedActivity(env, username) {
+  const DB = getDB(env);
+  const normalizedUsername = String(username || '').trim().toLowerCase();
+  if (!DB || !normalizedUsername) return;
+  await DB.prepare(`INSERT INTO user_activity (username, last_seen)
+    VALUES (?, ?)
+    ON CONFLICT(username) DO UPDATE SET last_seen = excluded.last_seen`)
+    .bind(normalizedUsername, new Date().toISOString())
+    .run();
+}
+
+export async function countOnlineUsers(env, windowSeconds = 15) {
+  const DB = getDB(env);
+  if (!DB) return 0;
+  const seconds = Math.max(1, Number(windowSeconds) || 15);
+  const cutoff = new Date(Date.now() - Math.floor(seconds) * 1000).toISOString();
+  const res = await DB.prepare('SELECT COUNT(DISTINCT lower(username)) AS c FROM user_activity WHERE last_seen >= ?')
+    .bind(cutoff)
+    .all();
+  return Number(res?.results?.[0]?.c || 0);
 }
 
 export async function updateUserLastIp(env, username, ip) {

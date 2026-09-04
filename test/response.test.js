@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { jsonResponse, makePolishedError } from '../src/response.js';
-import { countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, recordUserWarning, setSystemSetting, syncMethodsFromPayload, updateMethod, getMethod, listMethods } from '../src/vault-db.js';
+import { countOnlineUsers, countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, recordAuthenticatedActivity, recordUserWarning, setSystemSetting, syncMethodsFromPayload, updateMethod, getMethod, listMethods } from '../src/vault-db.js';
 import { adminHandler, logAuditAction } from '../src/admin.js';
 import { getCachedSystemSetting, invalidateMethodCache, invalidateUserCache } from '../src/helpers.js';
 import { isMethodPermittedForUser } from '../src/policy.js';
@@ -27,6 +27,38 @@ test('profile payloads are flattened directly into data instead of nested under 
   assert.equal(normalized.admin, false);
   assert.equal('profile' in normalized, false);
   assert.equal(normalized.warnings, 2);
+});
+
+test('authenticated activity counts each user once within the online window', async () => {
+  const rows = new Map();
+  const env = {
+    capi_db: {
+      prepare(sql) {
+        return {
+          bind(...values) {
+            return {
+              async run() {
+                if (sql.includes('INSERT INTO user_activity')) rows.set(values[0], values[1]);
+                return { success: true };
+              },
+              async all() {
+                if (sql.includes('COUNT(DISTINCT')) {
+                  const cutoff = values[0];
+                  return { results: [{ c: [...rows.values()].filter((seen) => seen >= cutoff).length }] };
+                }
+                return { results: [] };
+              }
+            };
+          }
+        };
+      }
+    }
+  };
+
+  await recordAuthenticatedActivity(env, 'alice');
+  rows.set('bob', new Date(Date.now() - 16000).toISOString());
+
+  assert.equal(await countOnlineUsers(env), 1);
 });
 
 test('plan-style profile payloads strip legacy expiry/service fields and expose expiry_date', () => {

@@ -268,6 +268,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
   if (!guard.ok) return guard.response;
   
   const admin = guard.admin;
+  await Vault.recordAuthenticatedActivity(env, admin.username || adminUsername);
   
   // Apply rate limiting with bypass support
   if (adminUsername && admin) {

@@ -64,6 +64,24 @@ function settingEnabled(value, fallback = true) {
   return !['false', '0', 'off', 'no'].includes(String(value).trim().toLowerCase());
 }
 
+async function filterResponseExtras(response, responseExtras) {
+  if (!response?.clone) return response;
+  try {
+    const body = await response.clone().json();
+    for (const [key, enabled] of Object.entries(responseExtras || {})) {
+      if (!enabled) delete body[key];
+    }
+    const headers = new Headers(response.headers);
+    return new Response(JSON.stringify(body, null, 2), {
+      status: response.status,
+      statusText: response.statusText,
+      headers
+    });
+  } catch (_) {
+    return response;
+  }
+}
+
 export async function handleRequest(request, env, ctx = null) {
   // Generate unique request ID for tracking
   const requestId = generateRequestId();
@@ -124,10 +142,10 @@ export async function handleRequest(request, env, ctx = null) {
       const rateLimitKey = username ? `route:${username}` : `route:${sourceIp}`;
       const rateLimitCheck = checkApiRateLimit(rateLimitKey, RATE_LIMIT_CONFIG.WINDOW_SECONDS);
       if (!rateLimitCheck.allowed) {
-        return jsonResponse({
+        return filterResponseExtras(jsonResponse({
           error: true,
           message: `Rate limited. Please wait ${rateLimitCheck.secondsUntilAvailable} second${rateLimitCheck.secondsUntilAvailable !== 1 ? 's' : ''} before trying again.`,
-        }, 429, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME, version: env.API_VERSION || '1.0.0', requestId });
+        }, 429, { service: env.API_NAME || APP_DEFAULTS.DEFAULT_SERVICE_NAME, version: env.API_VERSION || '1.0.0', requestId }), responseExtras);
       }
     }
     const isMaintenance = maintenanceEnabled === 'true';
@@ -223,18 +241,7 @@ export async function handleRequest(request, env, ctx = null) {
     };
 
     const dispatchRequestLog = async (response, route) => {
-      if (route !== 'admin' && response?.clone) {
-        try {
-          const body = await response.clone().json();
-          for (const [key, enabled] of Object.entries(responseExtras)) {
-            if (!enabled) delete body[key];
-          }
-          const headers = new Headers(response.headers);
-          response = new Response(JSON.stringify(body, null, 2), { status: response.status, statusText: response.statusText, headers });
-        } catch (_) {
-          // Leave non-JSON responses untouched.
-        }
-      }
+      response = await filterResponseExtras(response, responseExtras);
       const queryUsername = username || null;
       let errorMessage = null;
       if (response?.status >= 400 && response?.clone) {

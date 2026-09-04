@@ -349,6 +349,8 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       requestUser = auth.user;
     }
 
+    await Vault.recordAuthenticatedActivity(env, requestUser?.username);
+
     // Apply rate limiting (respects bypass_anti_spam flag)
     if (requestUser) {
       const rateLimitCheck = applyGlobalRateLimit(`user:${requestUser.username}`, Boolean(requestUser.bypass_anti_spam), 1);
@@ -383,6 +385,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
             ? requestContext.user
             : await Vault.getUser(env, link.username);
           if (isSuspendedUser(user)) return { ok: false, response: suspendedAccountResponse(), reason: 'suspended' };
+          await Vault.recordAuthenticatedActivity(env, user?.username || link.username);
           return { ok: true, username: link.username, user, bot: true };
         }
       }
@@ -392,6 +395,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       const auth = await authenticateApiCredentials(qv, env, request);
       if (!auth.ok) return { ok: false, reason: 'invalid_credentials', response: auth.response };
       if (isSuspendedUser(auth.user)) return { ok: false, reason: 'suspended', response: suspendedAccountResponse() };
+      await Vault.recordAuthenticatedActivity(env, auth.user.username);
       return { ok: true, username: qv.username, user: auth.user, bot: false };
     }
     return { ok: false, reason: 'missing_credentials' };
@@ -427,6 +431,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       userStats,
       ongoing,
       attacksToday,
+      onlineUsers,
       verifiedDiscordUsers,
       maintenanceMode,
       attacksDisabled
@@ -434,6 +439,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       Vault.getUserStatistics(env),
       Vault.countOngoing(env),
       Vault.countLogsToday(env),
+      Vault.countOnlineUsers(env, 15),
       Vault.countVerifiedDiscordLinks(env),
       requestContext?.maintenanceMode !== undefined
         ? Promise.resolve(requestContext.maintenanceMode)
@@ -453,7 +459,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       error: false,
       message: resolveApiMessage('network_statistics_success', 'Network statistics retrieved successfully.'),
       data: {
-        online_users_count: activeUsers,
+        online_users_count: onlineUsers,
         total_users_count: total,
         active_users_count: activeUsers,
         vip_users_count: vipUsers,
@@ -853,6 +859,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         if (link && link.username) {
           username = link.username;
           botAuth = true;
+          await Vault.recordAuthenticatedActivity(env, username);
         }
       }
     }
@@ -866,6 +873,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         const clientIp = getClientIp(request);
         if (!isUserIpAllowed(u, clientIp)) return makePolishedError('access denied from this IP address', 403, { ip: clientIp, whitelisted_ip: u.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' });
         await Vault.updateUserLastIp(env, username, clientIp);
+        await Vault.recordAuthenticatedActivity(env, username);
       } else {
         // No auth provided — require username/password to view a user's ongoing attacks
         return makePolishedError('missing credentials', 401, { hint: 'Provide username and password in the request.' });
@@ -927,10 +935,10 @@ export async function apiHandler(parts, request, env, requestId, logger, request
    * Parameters:
    * - username: Username making the attack
    * - password: User password (required if not using discord_user_id + BOT_API_KEY)
-   * - host/ip: Target IP address
-   * - port: Target port (default 80)
-   * - method: Attack method/vector (default udp)
-   * - time: Duration in seconds (default 60)
+    * - host/target/ip: Target IP address or hostname
+    * - port: Target port
+    * - method: Attack method/vector
+    * - time: Duration in seconds
    * - concurrents: Number of concurrent connections
    * - threads: Number of threads to use
    * - rps: Requests per second
@@ -947,8 +955,8 @@ export async function apiHandler(parts, request, env, requestId, logger, request
   if (endpoint === 'attack') {
     // ENDPOINT: /api/attack - Initiate DDoS attack or queue it if all slots are full
     // Auth: Username + Password OR Discord Link + BOT_API_KEY (bearer token)
-    // Required Parameters: username, password (or BOT_API_KEY), host/ip, method
-    // Optional Parameters: time (duration), concurrents, rps, threads, len (payload size), port, geo
+    // Required Parameters: username, password (or BOT_API_KEY), host/target/ip, port, time, method
+    // Optional Parameters: concurrents, rps, threads, len (payload size), geo
     // Returns: 
     //   - 200 OK with attack ID if executed immediately
     //   - 202 ACCEPTED if queued (all slots full)
@@ -972,12 +980,26 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         }
       }
     }
+    const targetParameter = qv.target || qv.host || qv.ip;
+    const missingParameters = [
+      !String(targetParameter || '').trim() ? 'host' : null,
+      !String(qv.port || '').trim() ? 'port' : null,
+      !String(qv.time || '').trim() ? 'time' : null,
+      !String(qv.method || '').trim() ? 'method' : null
+    ].filter(Boolean);
+
+    if (missingParameters.length) {
+      return makePolishedError('missing required parameter', 400, {
+        hint: 'Provide host (or target), port, time, and method.'
+      });
+    }
+
     const record = {
       username: qv.username || null,
-      target: qv.host || qv.ip || null,
-      port: qv.port || '80',
-      method: (qv.method || 'udp').toLowerCase(),
-      duration: Number(qv.time || 60),
+      target: targetParameter,
+      port: qv.port,
+      method: qv.method.toLowerCase(),
+      duration: Number(qv.time),
       concurrents: Number(qv.concurrents || 1),
       rps: Number(qv.rps || 0),
       threads: Number(qv.threads || 0),
@@ -1055,6 +1077,12 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     const targetType = String((dbMethodMeta?.target_type || payloadMeta?.target_type || expects || 'ip')).toLowerCase();
     const targetProvided = String(record.target || '').trim();
+
+    if (!targetProvided) {
+      return makePolishedError('missing required parameter', 400, {
+        hint: 'Provide the target using host=1.2.3.4 or ip=1.2.3.4.'
+      });
+    }
 
     if (targetType === 'ip' && !isIPv4(targetProvided)) {
       return makePolishedError(`method ${record.method} requires an IP target`, 400, { hint: 'Provide a valid IPv4 address as the target for this method.' });
