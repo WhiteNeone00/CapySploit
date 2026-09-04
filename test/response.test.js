@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { jsonResponse, makePolishedError } from '../src/response.js';
-import { countOnlineUsers, countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, recordAuthenticatedActivity, recordUserWarning, setSystemSetting, syncMethodsFromPayload, updateMethod, getMethod, listMethods } from '../src/vault-db.js';
+import { countOnlineUsers, countUserDailyAttacks, ensureTables, getUser, getUserWarningSummary, recordUserWarning, setSystemSetting, syncMethodsFromPayload, updateMethod, getMethod, listMethods } from '../src/vault-db.js';
 import { adminHandler, logAuditAction } from '../src/admin.js';
 import { getCachedSystemSetting, getUserExpiryDate, invalidateMethodCache, invalidateUserCache, isUserExpired, parseExpiryUnix } from '../src/helpers.js';
 import { isMethodPermittedForUser } from '../src/policy.js';
@@ -31,27 +31,28 @@ test('profile payloads are flattened directly into data instead of nested under 
 
 test('user expiry supports Unix timestamps and ISO dates', () => {
   assert.equal(isUserExpired({ expiry_unix: Math.floor(Date.now() / 1000) - 1 }), true);
-  assert.equal(isUserExpired({ expires_at: new Date(Date.now() + 60000).toISOString() }), false);
+  assert.equal(isUserExpired({ expiry_unix: Math.floor(Date.now() / 1000) + 60 }), false);
   const parsedExpiry = parseExpiryUnix('2026-12-20T00:00:00.000Z');
   assert.match(getUserExpiryDate({ expiry_unix: parsedExpiry }).toISOString(), /^2026-12-20T00:00:00/);
 });
 
 test('authenticated activity counts each user once within the online window', async () => {
-  const rows = new Map();
+  const rows = [
+    { username: 'alice', last_request_time: new Date().toISOString() },
+    { username: 'bob', last_request_time: new Date(Date.now() - 16000).toISOString() },
+    { username: 'ALICE', last_request_time: new Date().toISOString() }
+  ];
   const env = {
     capi_db: {
       prepare(sql) {
         return {
           bind(...values) {
             return {
-              async run() {
-                if (sql.includes('INSERT INTO user_activity')) rows.set(values[0], values[1]);
-                return { success: true };
-              },
               async all() {
                 if (sql.includes('COUNT(DISTINCT')) {
                   const cutoff = values[0];
-                  return { results: [{ c: [...rows.values()].filter((seen) => seen >= cutoff).length }] };
+                  const active = new Set(rows.filter((row) => row.last_request_time >= cutoff).map((row) => row.username.toLowerCase()));
+                  return { results: [{ c: active.size }] };
                 }
                 return { results: [] };
               }
@@ -61,9 +62,6 @@ test('authenticated activity counts each user once within the online window', as
       }
     }
   };
-
-  await recordAuthenticatedActivity(env, 'alice');
-  rows.set('bob', new Date(Date.now() - 16000).toISOString());
 
   assert.equal(await countOnlineUsers(env), 1);
 });
@@ -201,6 +199,51 @@ test('invalid API credentials do not mark a user online', async () => {
 
   assert.equal(response.status, 401);
   assert.equal(activityWrites, 0);
+});
+
+test('admin init requires credentials', async () => {
+  const response = await adminHandler(
+    ['init'],
+    new Request('https://example.test/admin/init'),
+    { capi_db: { prepare() { throw new Error('initialization should not run'); } } },
+    'init-auth-test',
+    {},
+    { sourceIp: '127.0.0.1' }
+  );
+
+  assert.equal(response.status, 401);
+});
+
+test('admin boolean edits convert false strings to zero', async () => {
+  const savedValues = [];
+  const DB = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          savedValues.push({ sql, args });
+          return this;
+        },
+        async all() {
+          if (sql.includes('FROM users')) {
+            return { results: [{ username: 'alice', password: 'secret', admin: 1, api: 1, suspended: 0, expiry_unix: 0 }] };
+          }
+          return { results: [] };
+        },
+        async run() { return { meta: { changes: 1 } }; }
+      };
+    }
+  };
+  const response = await adminHandler(
+    ['edit_user'],
+    new Request('https://example.test/admin/edit_user?username=root&password=secret&user_to_edit=alice&field_to_edit=api&new_value=false'),
+    { capi_db: DB },
+    'boolean-edit-test',
+    {},
+    { sourceIp: '127.0.0.1' }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(savedValues.some(({ args }) => args.includes(0)), true);
 });
 
 test('methods responses return a direct array in data and include min_time metadata', async () => {
@@ -426,7 +469,7 @@ test('admin view_user_logs returns the configured log payload instead of a gener
               if (sql.includes('SELECT COUNT(*) AS total FROM audit_logs')) return { results: [{ total: 0 }] };
               if (sql.includes('SELECT * FROM audit_logs')) return { results: [] };
               if (sql.includes('FROM users WHERE username = ?')) return { results: [{ username: 'root', password: 'admin123', admin: 1, whitelisted_ip: null, api: 1 }] };
-              if (sql.includes('FROM logs WHERE username = ?')) return { results: [{ id: 1, username: 'root', target: '1.1.1.1', port: '80', method: 'tcp', duration: '60', created_at: '2024-01-01T00:00:00.000Z' }] };
+              if (sql.includes('FROM ongoing_attacks WHERE username = ?')) return { results: [{ username: 'root', target: '1.1.1.1', port: '80', method: 'tcp', duration: '60', created_at: '2024-01-01T00:00:00.000Z', status: 'finished' }] };
               return { results: [] };
             },
             async run() { return {}; }
@@ -434,7 +477,7 @@ test('admin view_user_logs returns the configured log payload instead of a gener
         },
         async all() {
           if (sql.includes('FROM users WHERE username = ?')) return { results: [{ username: 'root', password: 'admin123', admin: 1, whitelisted_ip: null, api: 1 }] };
-          if (sql.includes('FROM logs WHERE username = ?')) return { results: [{ id: 1, username: 'root', target: '1.1.1.1', port: '80', method: 'tcp', duration: '60', created_at: '2024-01-01T00:00:00.000Z' }] };
+          if (sql.includes('FROM ongoing_attacks WHERE username = ?')) return { results: [{ username: 'root', target: '1.1.1.1', port: '80', method: 'tcp', duration: '60', created_at: '2024-01-01T00:00:00.000Z', status: 'finished' }] };
           return { results: [] };
         },
         async run() { return {}; }
@@ -502,7 +545,7 @@ test('counts attacks by calendar day instead of a rolling 24h window', async () 
         bind(...args) {
           return {
             async all() {
-              if (sql.includes("COUNT(*) AS c FROM logs WHERE username = ? AND datetime(created_at) >= datetime('now','start of day')")) {
+              if (sql.includes("COUNT(*) AS c FROM ongoing_attacks WHERE username = ? AND datetime(started_at) >= datetime('now','start of day')")) {
                 return { results: [{ c: 7 }] };
               }
               return { results: [] };
@@ -862,10 +905,11 @@ test('adds a polished hint to error responses without clutter', async () => {
   assert.equal(body.examples, undefined, 'examples should not be in response');
 });
 
-test('logs admin audit actions to the audit_logs table', async () => {
-  const insertCalls = [];
+test('admin audit actions do not create database audit logs', async () => {
+  const calls = [];
   const DB = {
     prepare(sql) {
+      calls.push(sql);
       return {
         bind(...args) {
           insertCalls.push({ sql, args });
@@ -882,7 +926,7 @@ test('logs admin audit actions to the audit_logs table', async () => {
   const result = await logAuditAction({ capi_db: DB }, 'admin1', 'add_user', 'alice', { reason: 'created' }, '127.0.0.1', 'success');
 
   assert.equal(result.status, 'success');
-  assert.ok(insertCalls.some((call) => call.sql.includes('INSERT INTO audit_logs')));
+  assert.equal(calls.some((sql) => sql.includes('audit_logs')), false);
 });
 
 test('invalidates cached system settings after the database setting changes', async () => {

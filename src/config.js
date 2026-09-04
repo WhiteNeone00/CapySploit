@@ -698,7 +698,7 @@ export const API_CONFIG = {
 export const DATABASE_CONFIG = {
   CLEANUP_INTERVAL_MS: 5 * 60 * 1000,
   LOG_RETENTION_DAYS: 30,
-  TABLES: ['users', 'logs', 'ongoing_attacks', 'blacklist', 'discord_links', 'methods', 'plans']
+  TABLES: ['users', 'ongoing_attacks', 'blacklist', 'discord_links', 'methods', 'plans']
 };
 
 // ==================== LOOKUP SERVICES ====================

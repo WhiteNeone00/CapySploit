@@ -25,7 +25,6 @@ const RESPONSE_SETTINGS = [
 export function getDB(env) {
   return env && (env.capi_db || env.CAPI_DB || env.DB || env.CAPI_db);
 }
-
 function normalizePermissions(value) {
   if (!value) return {};
   if (typeof value === 'string') {
@@ -159,22 +158,6 @@ export async function ensureTables(env) {
       suspended_by TEXT
     )`).run();
 
-    await DB.prepare(`CREATE TABLE IF NOT EXISTS logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT,
-      target TEXT,
-      port TEXT,
-      method TEXT,
-      duration TEXT,
-      concurrents INTEGER,
-      created_at TEXT
-    )`).run();
-
-    await DB.prepare(`CREATE TABLE IF NOT EXISTS user_activity (
-      username TEXT PRIMARY KEY,
-      last_seen TEXT NOT NULL
-    )`).run();
-
     await DB.prepare(`CREATE TABLE IF NOT EXISTS methods (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE,
@@ -237,7 +220,6 @@ export async function ensureTables(env) {
     )`).run();
 
     await DB.prepare(`CREATE TABLE IF NOT EXISTS ongoing_attacks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT,
       target TEXT,
       port TEXT,
@@ -271,7 +253,6 @@ export async function ensureTables(env) {
       updated_at TEXT
     )`).run();
 
-    await DB.prepare('CREATE INDEX IF NOT EXISTS idx_logs_username_created_at ON logs (username, created_at DESC)').run();
     await DB.prepare('CREATE INDEX IF NOT EXISTS idx_ongoing_status_expires_at ON ongoing_attacks (status, expires_at)').run();
     await DB.prepare('CREATE INDEX IF NOT EXISTS idx_ongoing_username_status ON ongoing_attacks (username, status)').run();
     await DB.prepare('CREATE INDEX IF NOT EXISTS idx_ongoing_method_status ON ongoing_attacks (method, status)').run();
@@ -533,6 +514,7 @@ export async function getUserWarningSummary(env, username) {
     count = 0;
     resetAtIso = new Date().toISOString();
     await DB.prepare('UPDATE users SET warning_count = ?, warning_reset_at = ? WHERE username = ?').bind(0, resetAtIso, username).run();
+    invalidateUserCache(username);
   }
 
   const suspended = Boolean(user.suspended);
@@ -599,24 +581,18 @@ export async function recordUserWarning(env, username, reason = 'blacklisted tar
   return summary;
 }
 
-export async function addLog(env, log) {
-  const DB = getDB(env);
-  if (!DB) return;
-  await DB.prepare('INSERT INTO logs (username,target,port,method,duration,concurrents,created_at) VALUES (?,?,?,?,?,?,?)').bind(log.username, log.target, log.port, log.method, log.duration, log.concurrents || 1, log.created_at || new Date().toISOString()).run();
-}
-
 export async function countUserDailyAttacks(env, username) {
   const DB = getDB(env);
   if (!DB) return 0;
-  const res = await DB.prepare("SELECT COUNT(*) AS c FROM logs WHERE username = ? AND datetime(created_at) >= datetime('now','start of day')").bind(username).all();
+  const res = await DB.prepare("SELECT COUNT(*) AS c FROM ongoing_attacks WHERE username = ? AND datetime(started_at) >= datetime('now','start of day')").bind(username).all();
   return Number(res?.results?.[0]?.c || 0);
 }
 
 export async function getLastAttackTime(env, username) {
   const DB = getDB(env);
   if (!DB) return null;
-  const res = await DB.prepare('SELECT created_at FROM logs WHERE username = ? ORDER BY created_at DESC LIMIT 1').bind(username).all();
-  return (res && res.results && res.results[0] && res.results[0].created_at) || null;
+  const res = await DB.prepare('SELECT started_at FROM ongoing_attacks WHERE username = ? ORDER BY started_at DESC LIMIT 1').bind(username).all();
+  return (res && res.results && res.results[0] && res.results[0].started_at) || null;
 }
 
 export async function updateUserLastRequestTime(env, username, ip = null) {
@@ -633,23 +609,12 @@ export async function updateUserLastRequestTime(env, username, ip = null) {
   invalidateSettingsCache();
 }
 
-export async function recordAuthenticatedActivity(env, username) {
-  const DB = getDB(env);
-  const normalizedUsername = String(username || '').trim().toLowerCase();
-  if (!DB || !normalizedUsername) return;
-  await DB.prepare(`INSERT INTO user_activity (username, last_seen)
-    VALUES (?, ?)
-    ON CONFLICT(username) DO UPDATE SET last_seen = excluded.last_seen`)
-    .bind(normalizedUsername, new Date().toISOString())
-    .run();
-}
-
 export async function countOnlineUsers(env, windowSeconds = 15) {
   const DB = getDB(env);
   if (!DB) return 0;
   const seconds = Math.max(1, Number(windowSeconds) || 15);
   const cutoff = new Date(Date.now() - Math.floor(seconds) * 1000).toISOString();
-  const res = await DB.prepare('SELECT COUNT(DISTINCT lower(username)) AS c FROM user_activity WHERE last_seen >= ?')
+  const res = await DB.prepare('SELECT COUNT(DISTINCT lower(username)) AS c FROM users WHERE last_request_time >= ?')
     .bind(cutoff)
     .all();
   return Number(res?.results?.[0]?.c || 0);
@@ -761,7 +726,7 @@ export async function countMethodsOngoingBatch(env, methods = []) {
 export async function getLogs(env, username) {
   const DB = getDB(env);
   if (!DB) return [];
-  const res = await DB.prepare('SELECT * FROM logs WHERE username = ?').bind(username).all();
+  const res = await DB.prepare('SELECT username, target, port, method, duration, started_at AS created_at, expires_at, status FROM ongoing_attacks WHERE username = ? ORDER BY started_at DESC').bind(username).all();
   return res.results || [];
 }
 
@@ -769,7 +734,7 @@ export async function getRecentAttacks(env, username, limit = 10) {
   const DB = getDB(env);
   if (!DB) return [];
   await cleanupOngoing(env);
-  const ongoingRes = await DB.prepare("SELECT id, username, target, port, method, duration, started_at AS created_at, expires_at, status FROM ongoing_attacks WHERE username = ? AND status='running' AND datetime(expires_at) > datetime('now') ORDER BY started_at DESC LIMIT ?").bind(username, Number(limit || 10)).all();
+  const ongoingRes = await DB.prepare("SELECT username, target, port, method, duration, started_at AS created_at, expires_at, status FROM ongoing_attacks WHERE username = ? AND status='running' AND datetime(expires_at) > datetime('now') ORDER BY started_at DESC LIMIT ?").bind(username, Number(limit || 10)).all();
   return ongoingRes.results || [];
 }
 
@@ -837,7 +802,8 @@ export async function verifyDiscordLinkCode(env, code, discordUserId, discordUse
   const DB = getDB(env);
   if (!DB) return null;
   const verifiedAt = new Date().toISOString();
-  await DB.prepare('UPDATE discord_links SET status = ?, discord_user_id = ?, discord_username = ?, verified_at = ? WHERE code = ?').bind('verified', discordUserId, discordUsername, verifiedAt, code).run();
+  const updated = await DB.prepare("UPDATE discord_links SET status = ?, discord_user_id = ?, discord_username = ?, verified_at = ? WHERE code = ? AND status = 'pending' AND datetime(expires_at) > datetime('now')").bind('verified', discordUserId, discordUsername, verifiedAt, code).run();
+  if (!Number(updated?.meta?.changes || 0)) return null;
   const res = await DB.prepare('SELECT * FROM discord_links WHERE code = ?').bind(code).all();
   return (res && res.results && res.results[0]) || null;
 }
@@ -852,8 +818,16 @@ export async function countVerifiedDiscordLinks(env) {
 export async function countLogsToday(env) {
   const DB = getDB(env);
   if (!DB) return 0;
-  const res = await DB.prepare("SELECT COUNT(*) AS c FROM logs WHERE datetime(created_at) >= datetime('now','start of day')").all();
+  const res = await DB.prepare("SELECT COUNT(*) AS c FROM ongoing_attacks WHERE datetime(started_at) >= datetime('now','start of day')").all();
   return Number(res?.results?.[0]?.c || 0);
+}
+
+export async function getAttackHistory(env, limit = 50, offset = 0) {
+  const DB = getDB(env);
+  if (!DB) return { rows: [], total: 0 };
+  const count = await DB.prepare('SELECT COUNT(*) AS total FROM ongoing_attacks').all();
+  const rows = await DB.prepare('SELECT username, target, port, method, duration, started_at AS created_at, expires_at, status FROM ongoing_attacks ORDER BY started_at DESC LIMIT ? OFFSET ?').bind(Number(limit), Number(offset)).all();
+  return { rows: rows?.results || [], total: Number(count?.results?.[0]?.total || 0) };
 }
 
 export async function getUserStatistics(env) {
@@ -977,60 +951,6 @@ export async function getPlanById(env, planId) {
   } catch (error) {
     return null;
   }
-}
-
-export async function listPlans(env) {
-  const DB = getDB(env);
-  if (!DB) return [];
-  const res = await DB.prepare('SELECT * FROM plans ORDER BY name ASC').all();
-  return res.results || [];
-}
-
-export async function createPlan(env, plan) {
-  const DB = getDB(env);
-  if (!DB) return null;
-  const payload = plan || {};
-  const createdAt = new Date().toISOString();
-  const permissions = JSON.stringify(normalizePermissions(payload.permissions || payload.Permissions || {}));
-  const config = JSON.stringify({
-    Name: payload.name || payload.Name || 'Custom',
-    Description: payload.description || payload.Description || '',
-    Max_Times: readNumber(payload.max_time ?? payload.Max_Times, 60),
-    Cooldown: readNumber(payload.cooldown ?? payload.Cooldown, 10),
-    Max_Concurrents: readNumber(payload.max_concurrents ?? payload.Max_Concurrents, 1),
-    DaysActive: readNumber(payload.days_active ?? payload.DaysActive, 5),
-    MaxDailyAttacks: readNumber(payload.max_daily_attacks ?? payload.MaxDailyAttacks, 100),
-    Api: Boolean(payload.api ?? payload.api_access ?? payload.Api ?? payload.Api_Acces ?? false),
-    Permissions: normalizePermissions(payload.permissions || payload.Permissions || {})
-  });
-
-  await DB.prepare(`INSERT INTO plans (name, description, price, lifetime_price, max_time, cooldown, max_concurrents, days_active, max_daily_attacks, api, raw_access, star_access, botnet_access, private_access, bypass_power, bypass_anti_spam, bypass_blacklist, vip, holder, reseller, permissions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-    payload.name || payload.Name || 'Custom',
-    payload.description || payload.Description || '',
-    readNumber(payload.price, 0),
-    readNumber(payload.lifetime_price ?? payload.Lifetime_Price, 0),
-    readNumber(payload.max_time ?? payload.Max_Times, 60),
-    readNumber(payload.cooldown ?? payload.Cooldown, 10),
-    readNumber(payload.max_concurrents ?? payload.Max_Concurrents, 1),
-    readNumber(payload.days_active ?? payload.DaysActive, 5),
-    readNumber(payload.max_daily_attacks ?? payload.MaxDailyAttacks, 100),
-    Boolean(payload.api ?? payload.api_access ?? payload.Api ?? payload.Api_Acces ?? false) ? 1 : 0,
-    Number(payload.raw_access ?? 0) ? 1 : 0,
-    Number(payload.star_access ?? 0) ? 1 : 0,
-    Number(payload.botnet_access ?? 0) ? 1 : 0,
-    Number(payload.private_access ?? 0) ? 1 : 0,
-    Number(payload.bypass_power ?? 0) ? 1 : 0,
-    Number(payload.bypass_anti_spam ?? 0) ? 1 : 0,
-    Number(payload.bypass_blacklist ?? 0) ? 1 : 0,
-    Number(payload.vip ?? 0) ? 1 : 0,
-    Number(payload.holder ?? 0) ? 1 : 0,
-    Number(payload.reseller ?? 0) ? 1 : 0,
-    permissions,
-    createdAt
-  ).run();
-  invalidateSettingsCache();
-
-  return getPlan(env, payload.name || payload.Name || 'Custom');
 }
 
 export async function updatePlan(env, planName, updates = {}) {
@@ -1163,10 +1083,10 @@ export async function resolveUserPlanSettings(env, user) {
   };
 }
 
-export async function applyPlanToUser(env, username, planName) {
+export async function applyPlanToUser(env, username, planName, planOverride = null) {
   const DB = getDB(env);
   if (!DB || !username || !planName) return null;
-  const plan = await getPlan(env, planName);
+  const plan = planOverride || await getPlan(env, planName);
   if (!plan) return null;
   const user = await getUser(env, username);
   if (!user) return null;
@@ -1253,19 +1173,6 @@ export async function seedRootUser(env) {
   }
 }
 
-export async function seedMethods(env) {
-  const DB = getDB(env);
-  if (!DB) return;
-  try {
-    const count = await DB.prepare('SELECT COUNT(*) AS c FROM methods').all();
-    if ((count?.results?.[0]?.c || 0) === 0) {
-      await syncMethodsFromPayload(env);
-    }
-  } catch (error) {
-    console.error('seedMethods error:', error.message);
-  }
-}
-
 export async function syncMethodsFromPayload(env) {
   const DB = getDB(env);
   if (!DB) return { added: 0, updated: 0, removed: 0, error: null };
@@ -1331,7 +1238,7 @@ export async function syncMethodsFromPayload(env) {
           normalized.max_slots || 0,
           normalized.max_concurrents || 5,
           normalized.min_time,
-          normalized.default_port || 80,
+          normalized.default_port ?? 80,
           normalized.max_time,
           normalized.raw_access ? 1 : 0,
           normalized.star_access ? 1 : 0,
@@ -1355,7 +1262,7 @@ export async function syncMethodsFromPayload(env) {
           normalized.max_slots || 0,
           normalized.max_concurrents || 5,
           normalized.min_time,
-          normalized.default_port || 80,
+          normalized.default_port ?? 80,
           normalized.max_time,
           normalized.raw_access ? 1 : 0,
           normalized.star_access ? 1 : 0,
@@ -1411,7 +1318,6 @@ export async function initializeDatabase(env) {
     await cleanupOngoing(env);
 
     await seedPlans(env);
-    await seedMethods(env);
     await syncMethodsFromPayload(env);
     await seedBlacklist(env);
     await seedRootUser(env);
@@ -1474,11 +1380,14 @@ export async function setSystemSetting(env, key, value, type = 'string', descrip
   const DB = getDB(env);
   if (!DB) return;
   try {
-    await DB.prepare('INSERT OR REPLACE INTO system_settings (key, value, type, description, updated_at) VALUES (?, ?, ?, ?, ?)').bind(
+    await DB.prepare(`INSERT INTO system_settings (key, value, type, description, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, type = excluded.type, description = excluded.description, updated_at = excluded.updated_at`).bind(
       key,
       String(value),
       type,
       description,
+      new Date().toISOString(),
       new Date().toISOString()
     ).run();
     invalidateSystemSettingCache(key);
@@ -1538,7 +1447,6 @@ export async function getMethod(env, methodName) {
   try {
     const explicit = await DB.prepare('SELECT id, name, description, enabled, default_access, vip, reseller, admin, max_slots, max_concurrents, min_time, default_port, max_time, raw_access, star_access, botnet_access, private_access, created_at, updated_at, target_type FROM methods WHERE name = ?').bind(methodName).all();
     if (explicit?.results?.[0]) return explicit.results[0];
-
     const fallback = await DB.prepare('SELECT * FROM methods WHERE name = ?').bind(methodName).all();
     return fallback?.results?.[0] || null;
   } catch (error) {
@@ -1631,7 +1539,7 @@ export async function getDatabaseStats(env) {
   if (!DB) return { error: 'No database connection' };
   try {
     const counts = {};
-    const tables = ['users', 'logs', 'ongoing_attacks', 'blacklist', 'discord_links', 'methods', 'plans'];
+    const tables = ['users', 'ongoing_attacks', 'blacklist', 'discord_links', 'methods', 'plans'];
 
     for (const table of tables) {
       const result = await DB.prepare(`SELECT COUNT(*) AS c FROM ${table}`).all();
@@ -1642,23 +1550,5 @@ export async function getDatabaseStats(env) {
   } catch (error) {
     console.error('Error getting database stats:', error.message);
     return { error: error.message };
-  }
-}
-
-export async function cleanupOldLogs(env, retentionDays = 30) {
-  const DB = getDB(env);
-  if (!DB) return { error: 'No database connection', deleted: 0 };
-  try {
-    const retention = Math.max(1, Number(retentionDays) || 30);
-    const retentionMs = retention * 24 * 60 * 60 * 1000;
-    const cutoffDate = new Date(Date.now() - retentionMs).toISOString();
-    
-    const result = await DB.prepare("DELETE FROM logs WHERE datetime(created_at) < datetime(?)").bind(cutoffDate).run();
-    const deleted = Number(result?.meta?.changes || 0);
-    
-    return { success: true, deleted, retention_days: retention, cutoff_date: cutoffDate, timestamp: new Date().toISOString() };
-  } catch (error) {
-    console.error('Error cleaning up old logs:', error.message);
-    return { error: error.message, deleted: 0 };
   }
 }

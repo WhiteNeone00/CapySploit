@@ -205,6 +205,8 @@ export async function handleRequest(request, env, ctx = null) {
         } finally {
           if (initializationPromise === currentInitialization) initializationPromise = null;
         }
+      } else {
+        await Vault.ensureTables(env);
       }
       await Vault.ensureResponseSettings(env);
       dbInitialized = true;

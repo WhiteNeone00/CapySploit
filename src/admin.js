@@ -62,120 +62,32 @@ function validatePassword(password) {
   };
 }
 
+function parseBooleanInput(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+  return null;
+}
+
 export async function logAuditAction(env, adminUsername, action, targetUser, details = {}, sourceIp = 'unknown', status = 'success') {
-  const DB = env && (env.capi_db || env.CAPI_DB || env.DB || env.CAPI_db);
-  if (!DB) return { ok: false, status: 'skipped', reason: 'no_database' };
-
-  try {
-    const setupStatement = DB.prepare(`CREATE TABLE IF NOT EXISTS audit_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      admin_username TEXT,
-      action TEXT,
-      target_user TEXT,
-      details TEXT,
-      source_ip TEXT,
-      status TEXT,
-      created_at TEXT
-    )`);
-    if (setupStatement && typeof setupStatement.run === 'function') {
-      await setupStatement.run();
-    }
-
-    const record = {
-      admin_username: adminUsername || 'system',
-      action: String(action || 'unknown'),
-      target_user: targetUser || null,
-      details: typeof details === 'string' ? details : JSON.stringify(details || {}),
-      source_ip: sourceIp || 'unknown',
-      status: String(status || 'success'),
-      created_at: new Date().toISOString()
-    };
-
-    const webhookPayload = {
-      action: record.action,
-      admin_username: record.admin_username,
-      target_user: record.target_user,
-      source_ip: record.source_ip,
-      status: record.status,
-      details: details && typeof details === 'object' ? details : { raw: record.details }
-    };
-
-    const insertSql = `INSERT INTO audit_logs (admin_username, action, target_user, details, source_ip, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`;
-    const insertStatement = DB.prepare(insertSql);
-    const executeInsert = typeof insertStatement.run === 'function'
-      ? insertStatement
-      : (typeof insertStatement.bind === 'function' ? insertStatement.bind(
-          record.admin_username,
-          record.action,
-          record.target_user,
-          record.details,
-          record.source_ip,
-          record.status,
-          record.created_at
-        ) : null);
-
-    if (executeInsert && typeof executeInsert.run === 'function') {
-      await executeInsert.run();
-    } else if (typeof insertStatement.bind === 'function') {
-      const bound = insertStatement.bind(
-        record.admin_username,
-        record.action,
-        record.target_user,
-        record.details,
-        record.source_ip,
-        record.status,
-        record.created_at
-      );
-      if (bound && typeof bound.run === 'function') {
-        await bound.run();
-      }
-    }
-
-    await sendDiscordWebhookForEvent('admin', webhookPayload, {
+  const record = {
+    admin_username: adminUsername || 'system',
+    action: String(action || 'unknown'),
+    target_user: targetUser || null,
+    source_ip: sourceIp || 'unknown',
+    status: String(status || 'success'),
+    created_at: new Date().toISOString()
+  };
+  await sendDiscordWebhookForEvent('admin', {
+    ...record,
+    details: details && typeof details === 'object' ? details : { raw: String(details || '') }
+  }, {
       mode: 'admin_only',
       title: 'ADMIN ACTION',
       description: `Admin action: ${record.action}`,
       footer: `CAPI Admin • ${record.status}`
     });
-
-    return { ok: true, status: record.status, created_at: record.created_at };
-  } catch (error) {
-    console.error('Failed to log audit action:', error);
-    return { ok: false, status: 'failed', reason: error.message || 'unknown_error' };
-  }
-}
-
-export async function getAuditLogs(env, options = {}) {
-  const DB = env && (env.capi_db || env.CAPI_DB || env.DB || env.CAPI_db);
-  if (!DB) return { logs: [], total: 0, limit: Number(options.limit || 50), offset: Number(options.offset || 0) };
-
-  try {
-    const limit = Math.max(1, Number(options.limit || 50));
-    const offset = Math.max(0, Number(options.offset || 0));
-    const statement = DB.prepare(`CREATE TABLE IF NOT EXISTS audit_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      admin_username TEXT,
-      action TEXT,
-      target_user TEXT,
-      details TEXT,
-      source_ip TEXT,
-      status TEXT,
-      created_at TEXT
-    )`);
-    if (statement && typeof statement.run === 'function') {
-      await statement.run();
-    }
-
-    const countResult = await DB.prepare('SELECT COUNT(*) AS total FROM audit_logs').all();
-    const total = Number(countResult?.results?.[0]?.total || 0);
-    const rowsResult = await DB.prepare('SELECT * FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?').bind(limit, offset).all();
-    const logs = rowsResult?.results || [];
-
-    return { logs, total, limit, offset };
-  } catch (error) {
-    console.error('Failed to fetch audit logs:', error);
-    return { logs: [], total: 0, limit: Number(options.limit || 50), offset: Number(options.offset || 0), error: error.message || 'unknown_error' };
-  }
+  return { ok: true, status: record.status, created_at: record.created_at };
 }
 
 async function requireAdminCredentials(q, env, requestContext = {}) {
@@ -236,24 +148,9 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
   const endpoint = parts[0] || '';
   const adminUsername = String(q.username || '').trim();
 
-  // Handle initialization endpoints (no auth required, called once at setup)
-  if (endpoint === 'init' && parts[1] !== 'status') {
-    // ENDPOINT: /admin/init - Initialize the D1 database
-    // Usage: Called once after deployment or when systems need reset
-    // Returns: Initialization status for all bindings
-    const initResult = await initializeAll(env);
-    return jsonResponse({
-      error: false,
-      message: resolveApiMessage('admin_init_completed', 'System initialization completed'),
-      data: initResult,
-      status: 'success'
-    }, initResult.all_success ? 200 : 207);
-  }
-
   if (endpoint === 'init' && parts[1] === 'status') {
-    // ENDPOINT: /admin/init/status - Check initialization status without auth
-    // Usage: Called to verify system readiness
-    // Returns: D1 database health check
+    const statusGuard = await requireAdminCredentials(q, env, requestContext);
+    if (!statusGuard.ok) return statusGuard.response;
     const status = await getInitializationStatus(env);
     return jsonResponse({
       error: false,
@@ -263,12 +160,24 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     }, status.ready ? 200 : 503);
   }
 
+  if (endpoint === 'init') {
+    const initGuard = await requireAdminCredentials(q, env, requestContext);
+    if (!initGuard.ok) return initGuard.response;
+    const initResult = await initializeAll(env);
+    return jsonResponse({
+      error: false,
+      message: resolveApiMessage('admin_init_completed', 'System initialization completed'),
+      data: initResult,
+      status: 'success'
+    }, initResult.all_success ? 200 : 207);
+  }
+
   // All other admin endpoints require authentication
   const guard = await requireAdminCredentials(q, env, requestContext);
   if (!guard.ok) return guard.response;
   
   const admin = guard.admin;
-  await Vault.recordAuthenticatedActivity(env, admin.username || adminUsername);
+  await Vault.updateUserLastRequestTime(env, admin.username || adminUsername, requestContext.sourceIp || null);
   
   // Apply rate limiting with bypass support
   if (adminUsername && admin) {
@@ -438,11 +347,17 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
       return makePolishedError('field not editable', 400, { hint: `Editable fields: ${ALLOWED_FIELDS.join(', ')}. For password changes, use /admin/change_password.` });
     }
     
-    // Convert expiry dates to the canonical Unix-seconds field.
+    const booleanFields = new Set(['reseller', 'vip', 'holder', 'api', 'bypass_slots', 'suspended', 'bypass_anti_spam', 'bypass_blacklist', 'raw_access', 'star_access', 'botnet_access', 'private_access', 'power_saving']);
+
+    // Convert expiry dates and booleans to canonical stored values.
     if (fieldName === 'expiry_unix') {
       const parsedExpiry = parseExpiryUnix(fieldValue);
       if (parsedExpiry === null) return makePolishedError('invalid expiry date', 400, { hint: 'Use Unix seconds or an ISO date such as 2026-12-20T23:59:59Z.' });
       u[fieldName] = parsedExpiry;
+    } else if (booleanFields.has(fieldName)) {
+      const parsedBoolean = parseBooleanInput(fieldValue);
+      if (parsedBoolean === null) return makePolishedError('invalid boolean value', 400, { hint: 'Use true, false, 1, or 0.' });
+      u[fieldName] = parsedBoolean ? 1 : 0;
     } else {
       u[fieldName] = isNaN(Number(fieldValue)) ? fieldValue : Number(fieldValue);
     }
@@ -462,7 +377,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     const plan = await Vault.getPlan(env, planName);
     if (!plan) return makePolishedError('plan not found', 404, { hint: `The plan '${planName}' does not exist.` });
 
-    const updatedUser = await Vault.applyPlanToUser(env, targetUsername, plan.name);
+    const updatedUser = await Vault.applyPlanToUser(env, targetUsername, plan.name, plan);
     return jsonResponse({
       error: false,
       message: resolveApiMessage('plan_assigned', `Plan '${plan.name}' assigned to user '${targetUsername}'.`),
@@ -594,18 +509,12 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
   }
 
   if (endpoint === 'view_all_logs') {
-    const DBref = Vault.getDB(env);
-    if (!DBref) return structuredResponse({ error: false, message: resolveApiMessage('log_database_unavailable', 'Log database is unavailable.'), data: { logs: [], pagination: null } });
     const limit = q.limit || 50;
     const offset = q.offset || 0;
     const { limit: validLimit, offset: validOffset } = validatePaginationParams(limit, offset);
-    
-    const [countRes, logsRes] = await Promise.all([
-      DBref.prepare('SELECT COUNT(*) AS total FROM logs').all(),
-      DBref.prepare(`SELECT * FROM logs ORDER BY id DESC LIMIT ? OFFSET ?`).bind(validLimit, validOffset).all()
-    ]);
-    const total = countRes?.results?.[0]?.total || 0;
-    const logs = (logsRes.results || []).map(({ username, ...entry }) => entry);
+    const history = await Vault.getAttackHistory(env, validLimit, validOffset);
+    const total = history.total;
+    const logs = (history.rows || []).map(({ username, ...entry }) => entry);
     const totalPages = Math.ceil(total / validLimit);
     const page = Math.floor(validOffset / validLimit) + 1;
 
@@ -630,33 +539,6 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
           has_next: page < totalPages, has_prev: page > 1
         }
       } 
-    });
-  }
-
-  if (endpoint === 'view_audit_logs') {
-    const limit = Number(q.limit || 50);
-    const offset = Number(q.offset || 0);
-    const auditData = await getAuditLogs(env, { limit, offset });
-    const validLimit = Math.max(1, Number.isFinite(limit) ? limit : 50);
-    const validOffset = Math.max(0, Number.isFinite(offset) ? offset : 0);
-    const totalPages = Math.max(1, Math.ceil((auditData.total || 0) / validLimit));
-    const page = Math.floor(validOffset / validLimit) + 1;
-
-    return structuredResponse({
-      error: false,
-      message: `${resolveApiMessage('audit_logs_retrieved', 'Audit logs retrieved')} (${(auditData.logs || []).length} of ${auditData.total || 0} entries).`,
-      data: {
-        logs: auditData.logs || [],
-        pagination: {
-          total: auditData.total || 0,
-          limit: validLimit,
-          offset: validOffset,
-          page,
-          pages: totalPages,
-          has_next: page < totalPages,
-          has_prev: page > 1
-        }
-      }
     });
   }
 
@@ -842,12 +724,7 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
 
   // Database cleanup endpoint
   if (endpoint === 'cleanup' || endpoint === 'db_cleanup') {
-    const retentionDays = Number(q.retention_days || 30);
-    if (retentionDays < 1 || retentionDays > 365) {
-      return makePolishedError('retention_days must be between 1 and 365', 400);
-    }
-    
-    const result = await Vault.cleanupOldLogs(env, retentionDays);
+    const result = await Vault.cleanupOngoing(env);
     if (result.error) {
       return makePolishedError(`Cleanup failed: ${result.error}`, 500);
     }
@@ -857,10 +734,10 @@ export async function adminHandler(parts, request, env, requestId, logger, reque
     
     return jsonResponse({
       error: false,
-      message: `${resolveApiMessage('database_cleanup_completed', 'Database cleanup completed')} - removed ${result.deleted} old records`,
+      message: `${resolveApiMessage('database_cleanup_completed', 'Database cleanup completed')} - finished ${result.updated || 0} expired attacks`,
       cleanup_result: {
-        deleted_records: result.deleted,
-        retention_days: retentionDays,
+        updated_records: result.updated || 0,
+        deleted_records: result.deleted || 0,
         timestamp: new Date().toISOString()
       },
       database_stats: stats

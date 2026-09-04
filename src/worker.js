@@ -1,7 +1,7 @@
 import { jsonResponse } from './response.js';
 import { handleRequest } from './orchestrator.js';
 import * as Vault from './vault-db.js';
-import { DATABASE_CONFIG, resolveApiMessage } from './config.js';
+import { resolveApiMessage } from './config.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -32,9 +32,6 @@ export default {
       const cleanupSetting = await Vault.getSystemSetting(env, 'auto_cleanup_enabled');
       if (cleanupSetting?.value === 'false') return;
       await Vault.cleanupOngoing(env);
-      if (controller?.cron === '0 0 * * 7') {
-        await Vault.cleanupOldLogs(env, DATABASE_CONFIG.LOG_RETENTION_DAYS);
-      }
     })());
   }
 };

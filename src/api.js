@@ -345,8 +345,6 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       requestUser = auth.user;
     }
 
-    await Vault.recordAuthenticatedActivity(env, requestUser?.username);
-
     // Apply rate limiting (respects bypass_anti_spam flag)
     if (requestUser) {
       const rateLimitCheck = applyGlobalRateLimit(`user:${requestUser.username}`, Boolean(requestUser.bypass_anti_spam), 1);
@@ -383,7 +381,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
             : await Vault.getUser(env, link.username);
           if (isSuspendedUser(user)) return { ok: false, response: suspendedAccountResponse(), reason: 'suspended' };
           if (isUserExpired(user)) return { ok: false, response: makePolishedError('account expired', 403), reason: 'expired' };
-          await Vault.recordAuthenticatedActivity(env, user?.username || link.username);
+          await Vault.updateUserLastRequestTime(env, user?.username || link.username, request.headers?.get?.('cf-connecting-ip') || null);
           return { ok: true, username: link.username, user, bot: true };
         }
       }
@@ -393,7 +391,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       const auth = await authenticateApiCredentials(qv, env, request);
       if (!auth.ok) return { ok: false, reason: 'invalid_credentials', response: auth.response };
       if (isSuspendedUser(auth.user)) return { ok: false, reason: 'suspended', response: suspendedAccountResponse() };
-      await Vault.recordAuthenticatedActivity(env, auth.user.username);
+      await Vault.updateUserLastRequestTime(env, auth.user.username, request.headers?.get?.('cf-connecting-ip') || null);
       return { ok: true, username: qv.username, user: auth.user, bot: false };
     }
     return { ok: false, reason: 'missing_credentials' };
@@ -704,6 +702,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
 
     const requestRow = await Vault.getDiscordLinkByCode(env, code);
     if (!requestRow) return jsonResponse({ error: true, message: resolveApiMessage('invalid_or_unknown_code', 'invalid or unknown code'), client, code }, 404, { service: serviceName, version: apiVersion });
+    if (requestRow.username !== auth.username) return makePolishedError('verification code does not belong to this user', 403);
     if (requestRow.client !== client) return jsonResponse({ error: true, message: 'client mismatch', client, code }, 400, { service: serviceName, version: apiVersion });
     if (requestRow.status === 'verified') return jsonResponse({ error: true, message: resolveApiMessage('code_already_used', 'code already used'), client, code }, 409, { service: serviceName, version: apiVersion });
     if (new Date() > new Date(requestRow.expires_at)) return jsonResponse({ error: true, message: resolveApiMessage('code_expired', 'code expired'), client, code }, 410, { service: serviceName, version: apiVersion });
@@ -736,6 +735,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
     if (!discordUserId) return makePolishedError('missing discord_user_id', 400, { hint: 'Provide discord_user_id to remove your Discord link.' });
     const existingLink = await Vault.getVerifiedDiscordLinkByDiscordId(env, discordUserId);
     if (!existingLink || !existingLink.username) return jsonResponse({ error: true, message: resolveApiMessage('discord_not_linked', 'Discord account is not currently linked. Use /link to verify first.') }, 404, { service: serviceName, version: apiVersion });
+    if (existingLink.username !== auth.username) return makePolishedError('Discord account belongs to another user', 403);
     
     let unlinked = null;
     try {
@@ -857,7 +857,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         if (link && link.username) {
           username = link.username;
           botAuth = true;
-          await Vault.recordAuthenticatedActivity(env, username);
+          await Vault.updateUserLastRequestTime(env, username, getClientIp(request));
         }
       }
     }
@@ -871,7 +871,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
         const clientIp = getClientIp(request);
         if (!isUserIpAllowed(u, clientIp)) return makePolishedError('access denied from this IP address', 403, { ip: clientIp, whitelisted_ip: u.whitelisted_ip, hint: 'This account is restricted to a specific IP address. Contact an administrator to change the whitelist.' });
         await Vault.updateUserLastIp(env, username, clientIp);
-        await Vault.recordAuthenticatedActivity(env, username);
+        await Vault.updateUserLastRequestTime(env, username, clientIp);
       } else {
         // No auth provided — require username/password to view a user's ongoing attacks
         return makePolishedError('missing credentials', 401, { hint: 'Provide username and password in the request.' });
@@ -1180,6 +1180,7 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       });
     }
 
+    let attackSlotsAcquired = false;
     // Acquire concurrency slots before launching attack
     if (CONCURRENCY_CONFIG.ENABLED) {
       try {
@@ -1191,20 +1192,14 @@ export async function apiHandler(parts, request, env, requestId, logger, request
             user_capacity: slotCheck?.user
           });
         }
+        attackSlotsAcquired = true;
       } catch (e) {
         return makePolishedError(`Slot acquisition failed: ${e.message}`, 500, { hint: 'Could not acquire attack slots. Please try again.' });
       }
     }
 
     try {
-      await Promise.all([
-        Vault.addLog(env, record),
-        Vault.addOngoingAttack(env, record)
-      ]);
-    } catch (error) {
-      if (CONCURRENCY_CONFIG.ENABLED) releaseAttackSlots(record.username);
-      throw error;
-    }
+      await Vault.addOngoingAttack(env, record);
 
     void fanOutMethodApiLinks(methodMeta, record).catch(() => {});
 
@@ -1285,13 +1280,15 @@ export async function apiHandler(parts, request, env, requestId, logger, request
       ]
     }).catch(() => {});
 
-    releaseAttackSlots(record.username);
     void Vault.updateUserLastRequestTime(env, record.username, request.headers?.get?.('cf-connecting-ip') || null).catch(() => {});
     return jsonResponse(responseBody, 200, { service: serviceName });
+    } finally {
+      if (attackSlotsAcquired) releaseAttackSlots(record.username);
+    }
   }
 
   if (endpoint === 'stop') {
-    return jsonResponse({ error: false, kill_id: 1 });
+    return makePolishedError('attack stop is not supported', 501, { hint: 'Active attacks can only finish when their configured duration expires.' });
   }
 
   return routeNotFound();

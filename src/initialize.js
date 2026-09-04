@@ -23,7 +23,7 @@ export async function initializeDatabase(env) {
     return { 
       success: true, 
       message: 'Database initialized successfully',
-      tables: ['plans', 'users', 'logs', 'methods', 'blacklist', 'ongoing_attacks', 'discord_links', 'system_settings']
+      tables: ['plans', 'users', 'methods', 'blacklist', 'ongoing_attacks', 'discord_links', 'system_settings']
     };
   } catch (error) {
     console.error('Database initialization failed:', error);
